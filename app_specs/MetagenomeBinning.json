@@ -106,10 +106,26 @@
 	    "type":"wsid"
 	},
 	{
+	    "id": "force_local_assembly",
+	    "label": "Force local assembly",
+	    "required": 0,
+	    "default": false,
+	    "type": "bool",
+	    "desc": "If set, disable the use of remote clusters for assembly"
+	},
+	{
+	    "id": "force_inline_annotation",
+	    "label": "Force inline annotation",
+	    "required": 0,
+	    "default": false,
+	    "type": "bool",
+	    "desc": "If set, disable the use of the cluster for annotation"
+	},
+	{
 	    "id": "perform_viral_binning",
 	    "label": "Perform viral binning",
 	    "required": 0,
-	    "default": false,
+	    "default": true,
 	    "type": "bool",
 	    "desc": "If set, perform viral binning of any contings unbinned after bacterial binning"
 	},
@@ -117,9 +133,17 @@
 	    "id": "perform_viral_annotation",
 	    "label": "Perform viral annotation",
 	    "required": 0,
-	    "default": false,
+	    "default": true,
 	    "type": "bool",
 	    "desc": "If set, perform viral annotation and loading of viral genomes into PATRIC database of any binned viruses"
+	},
+	{
+	    "id": "perform_bacterial_annotation",
+	    "label": "Perform bacterial annotation",
+	    "required": 0,
+	    "default": true,
+	    "type": "bool",
+	    "desc": "If set, perform bacterial annotation and loading of bacterial genomes into PATRIC database of any binned bacterial genomes"
 	}
     ]
 }

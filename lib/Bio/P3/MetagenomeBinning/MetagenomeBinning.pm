@@ -16,6 +16,7 @@ use Cwd;
 use base 'Class::Accessor';
 use JSON::XS;
 use Module::Metadata;
+use Text::CSV_XS qw(csv);
 use Bio::KBase::AppService::ClientExt;
 use Bio::KBase::AppService::AppConfig qw(data_api_url db_host db_user db_pass db_name
 					 binning_spades_threads binning_spades_ram
@@ -58,7 +59,7 @@ sub new
 }
 
 #
-# Preflight. The CGA app itself has fairly requirements; it spends most of its
+# Preflight. The CGA app itself has fairly small requirements; it spends most of its
 # time waiting on other applications.
 #
 # We don't mark as a control task, however, because it does have some signficant
@@ -68,8 +69,32 @@ sub preflight
 {
     my($app, $app_def, $raw_params, $params) = @_;
 
+    my $cpu = 8;
+
+    if (!$params->{force_local_assembly} && bebop_binning_user && bebop_binning_key)
+    {
+	$cpu = 1;
+    }
+
+    #
+    # Require the checkv database if we are doing viral binning.
+    #
+    if ($params->{perform_viral_binning})
+    {
+	my $db = $ENV{CHECKV_DB};
+	if (!defined($db))
+	{
+	    die "Checkv database environment CHECKV_DB not defined\n";
+	}
+	elsif (! -s $db)
+	{
+	    die "Checkv database not found at $db\n";
+	}
+    }
+
+
     my $pf = {
-	cpu => 1,
+	cpu => $cpu,
 	memory => "128G",
 	runtime => 0,
 	storage => 0,
@@ -123,7 +148,7 @@ sub process
 
     if (my $val = $params->{paired_end_libs})
     {
-	if ($self->bebop)
+	if (!$params->{force_local_assembly} && $self->bebop)
 	{
 	    #
 	    # Check for new form
@@ -176,79 +201,27 @@ sub process
     $self->compute_coverage();
     $self->compute_bins();
     my $all_bins = $self->extract_fasta();
-
-    my $n_bins = @$all_bins;
-    if ($n_bins == 0)
-    {
-	#
-	# No bins found. Write a simple HTML stating that.
-	#
-	my $report = "<h1>No bins found</h1>\n<p>No bins were found in this sample.\n";
-	$app->workspace->save_data_to_file($report, {},
-					   "$output_folder/BinningReport.html", 'html', 1, 0, $app->token);
-	return;
-    }
-
-    my $app_service = Bio::KBase::AppService::ClientExt->new();
-
     my @good_results;
 
-    my $annotations_inline = $ENV{P3_BINNING_ANNOTATIONS_INLINE};
-    if ($annotations_inline)
+    if (@$all_bins == 0)
     {
-	@good_results = $self->compute_annotations();
+	$self->write_empty_bin_report();
     }
-    else
+    elsif ($params->{perform_bacterial_annotation})
     {
-	my @tasks;
-	if ($ENV{BINNING_TEST})
-	{
-	    @tasks = qw(0da446f2-8274-45f1-856b-2b06c0d4154e
-			5ea8d032-1119-4713-836d-088e13848e2f
-			15f43bdf-e1dc-45a8-8a1c-0b4561324d68);
-	}
-	else
-	{
-	    @tasks = $self->submit_annotations($app_service);
-	} 
-	print STDERR "Awaiting completion of $n_bins annotations\n";
-	my $results = $app_service->await_task_completion(\@tasks, 10, 0);
-	print STDERR "Tasks completed\n";
-	
-	#
-	# Examine task output to ensure all succeeded
-	#
-	my $fail = 0;
-	for my $res (@$results)
-	{
-	    if ($res->{status} eq 'completed')
-	    {
-		push(@good_results, $res);
-	    }
-	    else
-	    {
-		warn "Task $res->{id} resulted with unsuccessful status $res->{status}\n" . Dumper($res);
-		$fail++;
-	    }
-	}
-	
-	if ($fail > 0)
-	{
-	    if ($fail == @$results)
-	    {
-		die "Annotation failed on all $fail bins\n";
-	    }
-	    else
-	    {
-		my $n = @$results;
-		warn "Annotation failed on $fail of $n bins, continuing\n";
-	    }
-	}
-    }	
-    #
-    # Annotations are complete. Pull data and write the summary report.
-    #
+	@good_results = $self->annotate_bins($all_bins);
+    }
 
+    if ($params->{perform_viral_binning})
+    {
+	my @bins = $self->bin_viruses();
+
+	if ($params->{perform_viral_annotation})
+	{
+	    $self->annotate_viruses(\@bins);
+	}
+    }
+    
     $self->write_summary_report(\@good_results, $all_bins, $self->app->workspace, $self->token);
 }
 
@@ -345,13 +318,31 @@ sub assemble
 	 "--meta",
 	 "-o", $self->assembly_dir);
 
-    if (binning_spades_threads)
+    #
+    # Prior code looked at binning_spades_threads and binning_spades_ram
+    # to set these parameters; use the scheduler-allocated value instead.
+    #
+    if (my $cpu = $ENV{P3_ALLOCATED_CPU})
     {
-	push(@$params, "--threads", binning_spades_threads);
+	push(@$params, "--threads", $cpu);
     }
-    if (binning_spades_ram)
+
+
+    if (my $mem = $ENV{P3_ALLOCATED_MEMORY})
     {
-	push(@$params, "--memory", binning_spades_ram);
+	my $bytes;
+	my %fac = (k => 1024, m => 1024*1024, g => 1024*1024*1024, t => 1024*1024*1024*1024 );
+	my($val, $suffix) = $mem =~ /^(.*)([mkgt])$/i;
+	if ($suffix)
+	{
+	    $bytes = $val * $fac{lc($suffix)};
+	}
+	else
+	{
+	    $bytes = $mem;
+	}
+	$mem = int($bytes / (1024*1024*1024));
+	push(@$params, "--memory", $mem);
     }
     
     my @cmd = ($self->spades, @$params);
@@ -424,6 +415,8 @@ sub compute_bins
 					     $self->output_folder . "/unbinned.fasta", 'contigs', 1, 1, $self->token);
     $self->app->workspace->save_file_to_file($self->work_dir . "/unplaced.fasta", {},
 					     $self->output_folder . "/unplaced.fasta", 'contigs', 1, 1, $self->token);
+    $self->app->workspace->save_file_to_file("bins.stats.txt", {},
+					     $self->output_folder . "/bins.stats.txt", 'txt', 1, 1, $self->token);
     $self->app->workspace->save_file_to_file("bins.stats.txt", {},
 					     $self->output_folder . "/bins.stats.txt", 'txt', 1, 1, $self->token);
 }
@@ -530,7 +523,6 @@ sub extract_fasta
 	    taxonomy_id => $taxon_id,
 	    reference_genome_id => $bin->{refGenomes}->[0],
 	    output_path => $self->output_folder,
-#	    output_path => $self->params->{output_path},
 	    output_file => $bin_base_name,
 #	    _parent_job => $self->app->task_id,
 	    queue_nowait => 1,
@@ -556,7 +548,76 @@ sub extract_fasta
     #
     return $all_bins;
 }
+
+sub write_empty_bin_report
+{
+    my($self) = @_;
+
+    #
+    # No bins found. Write a simple HTML stating that.
+    #
+    my $report = "<h1>No bins found</h1>\n<p>No bins were found in this sample.\n";
+    $self->app->workspace->save_data_to_file($report, {},
+					     $self->output_folder . "/BinningReport.html", 'html', 1, 0, $self->app->token);
+}
+
+sub annotate_bins
+{
+    my($self, $all_bins) = @_;
+
+    my @good_results;
+
+    my $annotations_inline = $ENV{P3_BINNING_ANNOTATIONS_INLINE} || $self->params->{force_inline_annotation};
+    if ($annotations_inline)
+    {
+	@good_results = $self->compute_annotations_local();
+    }
+    else
+    {
+	@good_results = $self->compute_annotations_cluster();
+    }
+
+
+}
+
+#
+# Use vbins_generate to bin the viruses.
+# vbins_generate /disks/patric-common/runtime/checkv-db/checkv-db-v1.0 `pwd`
+#
+sub bin_viruses
+{
+    my($self) = @_;
+
+    if (! -s $self->work_dir . "/unbinned.fasta")
+    {
+	warn "No unbinned data for viral binning\n";
+	return ();
+    }
+
+    my @cmd = ("vbins_generate", $ENV{CHECKV_DB}, $self->work_dir);
+    print STDERR "@cmd\n";
+    my $rc = system(@cmd);
+    if ($rc != 0)
+    {
+	warn "Viral binning failed with $rc: @cmd\n";
+	return ();
+    }
+
+    my $vbins=  csv(in => $self->work_dir "./vbins.tsv", headers => "auto", sep_char => "\t");
+    if (@$vbins == 0)
+    {
+	warn "No viral bins created\n";
+	$self->write_empty_vbin_report();
+	return ();
+    }
     
+}
+
+sub annotate_viruses
+{
+    my($self, $bins) = @_;
+}
+
 sub write_db_record
 {
     my($self, $n_children) = @_;
@@ -573,13 +634,58 @@ sub write_db_record
     $dbh->commit();
 }
 
+sub compute_annotations_cluster
+{
+    my($self) = @_;
+
+    my $app_service = Bio::KBase::AppService::ClientExt->new();
+
+    my @tasks = $self->submit_annotations($app_service);
+
+    print STDERR "Awaiting completion of " . scalar(@tasks) . " annotations\n";
+    my $results = $app_service->await_task_completion(\@tasks, 10, 0);
+    print STDERR "Tasks completed\n";
+	
+    #
+    # Examine task output to ensure all succeeded
+    #
+    my @good_results;
+    my $fail = 0;
+    for my $res (@$results)
+    {
+	if ($res->{status} eq 'completed')
+	{
+	    push(@good_results, $res);
+	}
+	else
+	{
+	    warn "Task $res->{id} resulted with unsuccessful status $res->{status}\n" . Dumper($res);
+	    $fail++;
+	}
+    }
+    
+    if ($fail > 0)
+    {
+	if ($fail == @$results)
+	{
+	    die "Annotation failed on all $fail bins\n";
+	}
+	else
+	{
+	    my $n = @$results;
+	    warn "Annotation failed on $fail of $n bins, continuing\n";
+	}
+    }
+    return @good_results;
+}	
+
 #
 # Compute annotations inline by invoking the annotation script.
 # Mostly used for testing, but may be useful for standalone implementation.
 #
 # Returns a list of Task hashes.
 #
-sub compute_annotations
+sub compute_annotations_local
 {
     my($self) = @_;
 
