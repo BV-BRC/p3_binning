@@ -16,6 +16,8 @@ use Cwd;
 use base 'Class::Accessor';
 use JSON::XS;
 use Module::Metadata;
+use File::Basename;
+use Template;
 use Text::CSV_XS qw(csv);
 use Bio::KBase::AppService::ClientExt;
 use Bio::KBase::AppService::AppConfig qw(data_api_url db_host db_user db_pass db_name
@@ -214,11 +216,12 @@ sub process
 
     if ($params->{perform_viral_binning})
     {
-	my @bins = $self->bin_viruses();
+	my $bins = $self->bin_viruses();
 
 	if ($params->{perform_viral_annotation})
 	{
-	    $self->annotate_viruses(\@bins);
+	    my @good_viruses = $self->annotate_viruses($bins);
+	    $self->write_viral_summary_report(\@good_viruses, $all_bins);
 	}
     }
     
@@ -594,7 +597,15 @@ sub bin_viruses
 	return ();
     }
 
-    my @cmd = ("vbins_generate", $ENV{CHECKV_DB}, $self->work_dir);
+    my $cmd = "vbins_generate";
+    my @params;
+    if (my $cpu = $ENV{P3_ALLOCATED_CPU})
+    {
+	push(@params, "--threads", $cpu);
+    }
+    push(@params, $ENV{CHECKV_DB}, $self->work_dir);
+
+    my @cmd = ($cmd, @params);
     print STDERR "@cmd\n";
     my $rc = system(@cmd);
     if ($rc != 0)
@@ -603,20 +614,177 @@ sub bin_viruses
 	return ();
     }
 
-    my $vbins=  csv(in => $self->work_dir "./vbins.tsv", headers => "auto", sep_char => "\t");
+    my $vbins = eval { csv(in => $self->work_dir . "/vbins.tsv", headers => "auto", sep_char => "\t") };
     if (@$vbins == 0)
     {
 	warn "No viral bins created\n";
 	$self->write_empty_vbin_report();
 	return ();
     }
-    
+
+    for my $vbin (@$vbins)
+    {
+	#
+	# Force conversion to numeric for the numeric fields.
+	#
+	for my $f (qw(pct_error length completeness coverage))
+	{
+	    $vbin->{$f} += 0 if exists $vbin->{$f};
+	}
+	
+	my $bin_name = "vBin$vbin->{bin}.fa";
+	my $fa_file = $self->work_dir . "/$bin_name";
+	if (! -f $fa_file)
+	{
+	    print "Could not find $fa_file\n";
+	}
+	my $ws_path = $self->output_folder . "/$bin_name";
+	$self->app->workspace->save_file_to_file($fa_file, $vbin, $ws_path, 'contigs', 1, 1, $self->token);
+	$vbin->{ws_path} = $ws_path;
+	$vbin->{bin_name} = $bin_name;
+    }
+    $self->app->workspace->save_file_to_file($self->work_dir . "/vbins.html",
+					     {}, $self->output_folder . "/ViralBins.html", 'html', 1, 1, $self->token);
+    return $vbins;
 }
 
 sub annotate_viruses
 {
     my($self, $bins) = @_;
+
+    my @good_results;
+
+    my $api = P3DataAPI->new(data_api_url);
+    my $app_spec = $self->find_app_spec("GenomeAnnotation");
+
+    my $sub_time = time;
+    my $n = 1;
+    my $recipe = $self->params->{viral_recipe} // "viral";
+    for my $bin (@$bins)
+    {
+    	my $code = 1;
+	my $domain = 'Viruses';
+	my $taxon_id = $bin->{taxon_id};
+	my @res = $api->query("taxonomy", ["eq", 'taxon_id', $taxon_id], ["select", "genetic_code,lineage_names"]);
+	if (@res)
+	{
+	    my $lineage;
+	    ($code, $lineage) = @{$res[0]}{'genetic_code', 'lineage_names'};
+	    shift @$lineage if ($lineage->[0] =~ /cellular organisms/);
+	    $domain = $lineage->[0];
+	}
+
+	$bin->{domain} = $domain;
+	$bin->{genetic_code} = $code;
+
+	(my $bin_base_name = $bin->{bin_name}) =~ s/\.[^.]+$//;
+
+	my $descr = {
+	    contigs => $bin->{ws_path},
+	    code => $code,
+	    domain => $domain,
+	    scientific_name=> $bin->{name},
+	    taxonomy_id => $taxon_id,
+	    output_path => $self->output_folder,
+	    output_file => $bin_base_name,
+#	    _parent_job => $self->app->task_id,
+	    queue_nowait => 1,
+	    analyze_quality => 0,
+	    ($self->params->{skip_indexing} ? (skip_indexing => 1) : ()),
+	    recipe => $recipe,
+	};
+
+	my $json = JSON::XS->new->pretty->canonical();
+
+	my $tmp = File::Temp->new;
+	print $tmp $json->encode($descr);
+	close($tmp);
+	my @cmd = ("App-GenomeAnnotation", "xx", $app_spec, "$tmp");
+	print STDERR "Run annotation: @cmd\n";
+	my $start = time;
+	my $rc = system(@cmd);
+	my $end = time;
+	if ($rc != 0)
+	{
+	    warn "Annotation failed with rc=$rc\n";
+	    next;
+	}
+
+	my $gto;
+	my $genome_id;
+	eval {
+	    $gto = $self->app->workspace->download_json("$descr->{output_path}/.$descr->{output_file}/$descr->{output_file}.genome");
+	    $genome_id = $gto->{id};
+	};
+	
+	push(@good_results, {
+	    id => $n++,
+	    genome_id => $genome_id,
+	    app => "App-GenomeAnnotation",
+	    parameters => $descr,
+	    user_id => 'immediate-user',
+	    submit_time => strftime("%Y-%m-%dT%H:%M:%SZ", gmtime $sub_time),
+	    start_time => strftime("%Y-%m-%dT%H:%M:%SZ", gmtime $start),
+	    completed_time => strftime("%Y-%m-%dT%H:%M:%SZ", gmtime $end),
+	    vbin => $bin,
+	});
+    }
+    print Dumper(@good_results);
+    return @good_results;
 }
+
+
+sub write_viral_summary_report
+{
+    my($self, $good, $all_bins) = @_;
+
+    eval {
+
+	#
+	# Find template.
+	#
+	
+	my $mpath = Module::Metadata->find_module_by_name(__PACKAGE__);
+	$mpath =~ s/\.pm$//;
+	
+	my $summary_tt = dirname($mpath) . "/ViralBinSummary.tt";
+	-f $summary_tt or die "Summary not found at $summary_tt\n";
+
+	my $url_base = 'https://www.patricbrc.org/view/Genome';
+
+	my $bins = [];
+	my %vars = (bins => $bins,
+		    params => $self->params,
+		    job_id => $self->task_id,
+		    );
+	for my $bin (@$good)
+	{
+	    my $genome_url = "$url_base/$bin->{genome_id}";
+	    my $val = {
+		vbin => $bin->{vbin},
+		genome_id => $bin->{genome_id},
+		genome_url => $genome_url,
+	    };
+	    push(@$bins, $val);
+	}
+
+	my $templ = Template->new(ABSOLUTE => 1);
+	my $html;
+
+	print STDERR Dumper(\%vars);
+	$templ->process($summary_tt, \%vars, \$html);
+
+	my $output_path = $self->params->{output_path} . "/." . $self->params->{output_file};
+	$self->app->workspace->save_data_to_file($html, {},
+						 "$output_path/ViralBinningReport.html", 'html', 1, 0);
+    };
+    if ($@)
+    {
+	warn "Error creating final report: $@";
+    }
+}
+
+
 
 sub write_db_record
 {

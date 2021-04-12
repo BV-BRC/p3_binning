@@ -90,6 +90,14 @@
 	    "type": "string"
 	},
 	{
+	    "id": "viral_recipe",
+	    "label": "Viral nnotation recipe",
+	    "required": 0,
+	    "default": null,
+	    "desc": "Specifies a non-default annotation recipe for annotation of viral bins",
+	    "type": "string"
+	},
+	{
 	    "id":"output_path",
 	    "label":"Output Folder",
 	    "required": 1,
