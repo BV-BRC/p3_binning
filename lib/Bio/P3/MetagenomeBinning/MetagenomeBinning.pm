@@ -83,10 +83,10 @@ sub preflight
     #
     if ($params->{perform_viral_binning})
     {
-	my $db = $ENV{CHECKV_DB};
+	my $db = $ENV{CHECKVDB};
 	if (!defined($db))
 	{
-	    die "Checkv database environment CHECKV_DB not defined\n";
+	    die "Checkv database environment CHECKVDB not defined\n";
 	}
 	elsif (! -s $db)
 	{
@@ -603,7 +603,7 @@ sub bin_viruses
     {
 	push(@params, "--threads", $cpu);
     }
-    push(@params, $ENV{CHECKV_DB}, $self->work_dir);
+    push(@params, $ENV{CHECKVDB}, $self->work_dir);
 
     my @cmd = ($cmd, @params);
     print STDERR "@cmd\n";
