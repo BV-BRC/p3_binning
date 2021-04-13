@@ -152,6 +152,14 @@
 	    "default": true,
 	    "type": "bool",
 	    "desc": "If set, perform bacterial annotation and loading of bacterial genomes into PATRIC database of any binned bacterial genomes"
+	},
+	{
+	    "id": "assembler",
+	    "label": "Assembler to use",
+	    "required": 0,
+	    "default": "",
+	    "type": "string",
+	    "desc": "If set, use the given assembler"
 	}
     ]
 }

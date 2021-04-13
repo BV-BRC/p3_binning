@@ -16,7 +16,9 @@ use Cwd;
 use base 'Class::Accessor';
 use JSON::XS;
 use Module::Metadata;
+use IPC::Run;
 use File::Basename;
+use File::Path qw(make_path remove_tree);
 use Template;
 use Text::CSV_XS qw(csv);
 use Bio::KBase::AppService::ClientExt;
@@ -249,6 +251,9 @@ sub stage_paired_end_libs
     # Check for new form
     #
 
+    my @pairs_1;
+    my @pairs_2;
+
     if (@$libs == 2 && !ref($libs->[0]) && !ref($libs->[1]))
     {
 	@reads = @$libs;
@@ -261,17 +266,72 @@ sub stage_paired_end_libs
 	}
 	elsif (@$libs > 1)
 	{
-	    die "MetagenomeBinning:: stage_paired_end_libs - only one lib may be provided";
+	    # die "MetagenomeBinning:: stage_paired_end_libs - only one lib may be provided";
+	    $self->{megahit_mode} = 1;
 	}
 
-	my $lib = $libs->[0];
-	@reads = @$lib{qw(read1 read2)};
+	for my $lib (@$libs)
+	{
+	    @reads = @$lib{qw(read1 read2)};
+	    my $staged = $self->app->stage_in(\@reads, $self->stage_dir, 1);
+	    push(@pairs_1, $staged->{$lib->{read1}});
+	    push(@pairs_2, $staged->{$lib->{read2}});
+	}
     }
-    my $staged = $self->app->stage_in(\@reads, $self->stage_dir, 1);
-
+    my $p1 = join(",", @pairs_1);
+    my $p2 = join(",", @pairs_2);
     push(@{$self->assembly_params},
-	 "-1", $staged->{$reads[0]},
-	 "-2", $staged->{$reads[1]});
+	 ($p1 ? ("-1", $p1) : ()),
+	 ($p2 ? ("-2", $p2) : ()),
+     );
+}
+
+sub stage_srr_ids
+{
+    my($self, $srr_ids) = @_;
+
+    my $stage = $self->stage_dir;
+
+    my @pairs_1;
+    my @pairs_2;
+    my @unpaired;
+    for my $id (@$srr_ids)
+    {
+	my $dir = "$stage/$id";
+	remove_tree($dir);
+	make_path($dir);
+	my $ok = IPC::Run::run(["p3-sra", "--id", $id, "--out", $dir]);
+	if (!$ok)
+	{
+	    die "Error staging SRA sample $id\n";
+	}
+	my @files = glob("$dir/*fastq");
+	if (@files == 1)
+	{
+	    push(@unpaired, $files[0]);
+	}
+	elsif (@files == 2)
+	{
+	    push(@pairs_1, $files[0]);
+	    push(@pairs_2, $files[1]);
+	}
+	else
+	{
+	    die "Unxpected file list from loading $id: @files\n";
+	}
+    }
+    if (@unpaired || @pairs_1 > 1)
+    {
+	$self->{megahit_mode} = 1;
+    }
+    my $p1 = join(",", @pairs_1);
+    my $p2 = join(",", @pairs_2);
+    my $up = join(",", @unpaired);
+    push(@{$self->assembly_params},
+	 ($p1 ? ("-1", $p1) : ()),
+	 ($p2 ? ("-2", $p2) : ()),
+	 ($up ? ("-r", $up) : ()),
+     );
 }
 
 #
@@ -316,9 +376,24 @@ sub assemble
 {
     my ($self) = @_;
 
+    if ($self->{megahit_mode} || $self->params->{assembler} eq 'megahit')
+    {
+	return $self->assemble_with_megahit();
+    }
+    else
+    {
+	return $self->assemble_with_spades();
+    }
+}
+
+sub assemble_with_spades
+{
+    my($self) = @_;
+
     my $params = $self->assembly_params;
     push(@$params,
 	 "--meta",
+	 "--only-assemble",
 	 "-o", $self->assembly_dir);
 
     #
@@ -364,6 +439,60 @@ sub assemble
 					     $self->output_folder . "/params.txt", 'txt', 1, 1, $self->token);
 
     $self->contigs($self->assembly_dir . "/contigs.fasta");
+}
+
+sub assemble_with_megahit
+{
+    my($self) = @_;
+
+    my $params = $self->assembly_params;
+    rmdir($self->assembly_dir);
+    push(@$params,
+	 "-o", $self->assembly_dir);
+
+    #
+    # Prior code looked at binning_spades_threads and binning_spades_ram
+    # to set these parameters; use the scheduler-allocated value instead.
+    #
+    if (my $cpu = $ENV{P3_ALLOCATED_CPU})
+    {
+	push(@$params, "-t", $cpu);
+    }
+
+
+    if (my $mem = $ENV{P3_ALLOCATED_MEMORY})
+    {
+	my $bytes;
+	my %fac = (k => 1024, m => 1024*1024, g => 1024*1024*1024, t => 1024*1024*1024*1024 );
+	my($val, $suffix) = $mem =~ /^(.*)([mkgt])$/i;
+	if ($suffix)
+	{
+	    $bytes = $val * $fac{lc($suffix)};
+	}
+	else
+	{
+	    $bytes = $mem;
+	}
+	$mem = int($bytes / (1024*1024*1024));
+	push(@$params, "--memory", $bytes);
+    }
+    
+    my @cmd = ("megahit", @$params);
+    my $rc = system(@cmd);
+    #my $rc = 0;
+    if ($rc != 0)
+    {
+	die "Error running assembly command: @cmd\n";
+    }
+
+    $self->app->workspace->save_file_to_file($self->assembly_dir . "/final.contigs.fa", {},
+					     $self->output_folder . "/contigs.fasta", 'contigs', 1, 1, $self->token);
+    $self->app->workspace->save_file_to_file($self->assembly_dir . "/log", {},
+					     $self->output_folder . "/megahit.log", 'txt', 1, 1, $self->token);
+    $self->app->workspace->save_file_to_file($self->assembly_dir . "/opts.txt", {},
+					     $self->output_folder . "/opts.txt", 'txt', 1, 1, $self->token);
+
+    $self->contigs($self->assembly_dir . "/final.contigs.fa");
 }
 
 #
@@ -622,6 +751,7 @@ sub bin_viruses
 	return ();
     }
 
+    my @ret_vbins;
     for my $vbin (@$vbins)
     {
 	#
@@ -636,16 +766,18 @@ sub bin_viruses
 	my $fa_file = $self->work_dir . "/$bin_name";
 	if (! -f $fa_file)
 	{
-	    print "Could not find $fa_file\n";
+	    print STDERR "Could not find $fa_file\n";
+	    next;
 	}
 	my $ws_path = $self->output_folder . "/$bin_name";
 	$self->app->workspace->save_file_to_file($fa_file, $vbin, $ws_path, 'contigs', 1, 1, $self->token);
 	$vbin->{ws_path} = $ws_path;
 	$vbin->{bin_name} = $bin_name;
+	push @ret_vbins, $vbin;
     }
     $self->app->workspace->save_file_to_file($self->work_dir . "/vbins.html",
 					     {}, $self->output_folder . "/ViralBins.html", 'html', 1, 1, $self->token);
-    return $vbins;
+    return \@ret_vbins;
 }
 
 sub annotate_viruses
@@ -780,7 +912,7 @@ sub write_viral_summary_report
     };
     if ($@)
     {
-	warn "Error creating final report: $@";
+	warn "Error creating final viral binning report: $@";
     }
 }
 
