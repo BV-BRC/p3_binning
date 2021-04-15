@@ -82,9 +82,11 @@ sub preflight
 
     #
     # Require the checkv database if we are doing viral binning.
+    # Also bump the cpu request up.
     #
     if ($params->{perform_viral_binning})
     {
+	$cpu = 8;
 	my $db = $ENV{CHECKVDB};
 	if (!defined($db))
 	{
@@ -861,10 +863,20 @@ sub annotate_viruses
 	    vbin => $bin,
 	});
     }
-    print Dumper(@good_results);
     return @good_results;
 }
 
+sub write_empty_vbin_report
+{
+    my($self) = @_;
+
+    #
+    # No bins found. Write a simple HTML stating that.
+    #
+    my $report = "<h1>No viral bins found</h1>\n<p>No viral bins were found in this sample.\n";
+    $self->app->workspace->save_data_to_file($report, {},
+					     $self->output_folder . "/ViralBinningReport.html", 'html', 1, 0, $self->app->token);
+}
 
 sub write_viral_summary_report
 {
