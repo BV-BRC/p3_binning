@@ -18,6 +18,7 @@ use JSON::XS;
 use Module::Metadata;
 use IPC::Run;
 use File::Basename;
+use File::Copy qw(copy);
 use File::Path qw(make_path remove_tree);
 use Template;
 use Text::CSV_XS qw(csv);
@@ -75,10 +76,10 @@ sub preflight
 
     my $cpu = 8;
 
-    if (!$params->{force_local_assembly} && bebop_binning_user && bebop_binning_key)
-    {
-	$cpu = 1;
-    }
+    # if (!$params->{force_local_assembly} && bebop_binning_user && bebop_binning_key)
+    # {
+    # 	$cpu = 1;
+    # }
 
     #
     # Require the checkv database if we are doing viral binning.
@@ -154,21 +155,20 @@ sub process
 
     if (my $val = $params->{paired_end_libs})
     {
-	if (!$params->{force_local_assembly} && $self->bebop)
+	#
+	# Check for new form
+	#
+	if (@$val == 2 && !ref($val->[0]) && !ref($val->[1]))
 	{
-	    #
-	    # Check for new form
-	    #
-	    
-	    if (@$val == 2 && !ref($val->[0]) && !ref($val->[1]))
-	    {
-		$val = [{ read1 => $val->[0], read2 => $val->[1] }];
-	    }
-	    
-	    if (@$val != 1)
-	    {
-		die "MetagenomeBinning:: only one paired end library may be provided";
-	    }
+	    $val = [{ read1 => $val->[0], read2 => $val->[1] }];
+	}
+
+	if (!$params->{force_local_assembly} &&
+	    $self->bebop &&
+	    @$val == 1 &&
+	    ($params->{assembler} eq 'auto' || $params->{assembler} eq 'metaspades')
+	   )
+	{
 	    $self->bebop->assemble_paired_end_libs($output_folder, $val->[0], $self->app->task_id);
 	    my $local_contigs = "$assembly_dir/contigs.fasta";
 	    $self->contigs($local_contigs);
@@ -189,7 +189,9 @@ sub process
     }
     elsif (my $val = $params->{srr_ids})
     {
-	if ($self->bebop)
+	# current bebop code doesn't grok SRA
+	
+	if (0 && $self->bebop)
 	{
 	    $self->bebop->assemble_srr_ids($val);
 	}
@@ -204,21 +206,30 @@ sub process
 	$self->stage_contigs($params->{contigs});
     }
 
-    $self->compute_coverage();
-    $self->compute_bins();
-    my $all_bins = $self->extract_fasta();
+    my $all_bins = [];
     my @good_results;
-
-    if (@$all_bins == 0)
+    if ($params->{perform_bacterial_annotation} || $params->{perform_bacterial_binning})
     {
-	$self->write_empty_bin_report();
+	$self->compute_coverage();
+	$self->compute_bins();
+	my $all_bins = $self->extract_fasta();
+
+	if (@$all_bins == 0)
+	{
+	    $self->write_empty_bin_report();
+	}
+	elsif ($params->{perform_bacterial_annotation})
+	{
+	    @good_results = $self->annotate_bins($all_bins);
+	}
     }
-    elsif ($params->{perform_bacterial_annotation})
+    else
     {
-	@good_results = $self->annotate_bins($all_bins);
+	IPC::Run::run(["bins_coverage", $self->contigs(), $self->work_dir]);
+	symlink("contigs.fasta", $self->work_dir . "/unbinned.fasta") || die "symlink failed $!";
     }
 
-    if ($params->{perform_viral_binning})
+    if ($params->{perform_viral_annotation} || $params->{perform_viral_binning})
     {
 	my $bins = $self->bin_viruses();
 
@@ -324,6 +335,10 @@ sub stage_srr_ids
     }
     if (@unpaired || @pairs_1 > 1)
     {
+	if ($self->params->{assembler} eq 'metaspades')
+	{
+	    die "This job cannot be processed using metaspades. It includes unpaired reads or more than one paired-read library\n";
+	}
 	$self->{megahit_mode} = 1;
     }
     my $p1 = join(",", @pairs_1);
@@ -480,6 +495,7 @@ sub assemble_with_megahit
     }
     
     my @cmd = ("megahit", @$params);
+    print STDERR "@cmd\n";
     my $rc = system(@cmd);
     #my $rc = 0;
     if ($rc != 0)
@@ -492,7 +508,9 @@ sub assemble_with_megahit
     $self->app->workspace->save_file_to_file($self->assembly_dir . "/log", {},
 					     $self->output_folder . "/megahit.log", 'txt', 1, 1, $self->token);
     $self->app->workspace->save_file_to_file($self->assembly_dir . "/opts.txt", {},
-					     $self->output_folder . "/opts.txt", 'txt', 1, 1, $self->token);
+					     $self->output_folder . "/opts.txt", 'txt', 1, 1, $self->token) if -f $self->assembly_dir . "/opts.txt";
+    $self->app->workspace->save_file_to_file($self->assembly_dir . "/options.json", {},
+					     $self->output_folder . "/options.json", 'json', 1, 1, $self->token) if -f $self->assembly_dir . "/options.json";
 
     $self->contigs($self->assembly_dir . "/final.contigs.fa");
 }
