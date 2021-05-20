@@ -163,8 +163,12 @@ sub process
 	    $val = [{ read1 => $val->[0], read2 => $val->[1] }];
 	}
 
+	my $size = $self->compute_paired_end_lib_size($val);
+	printf STDERR "Paired end library size is %.2f GB\n", $size/1e9;
+
 	if (!$params->{force_local_assembly} &&
 	    $self->bebop &&
+	    $size > 10_000_000_000 &&
 	    @$val == 1 &&
 	    ($params->{assembler} eq 'auto' || $params->{assembler} eq 'metaspades')
 	   )
@@ -302,6 +306,28 @@ sub stage_paired_end_libs
 	 ($p1 ? ("-1", $p1) : ()),
 	 ($p2 ? ("-2", $p2) : ()),
      );
+}
+
+sub compute_paired_end_lib_size
+{
+    my($self, $libs) = @_;
+
+    my $total = 0;
+    
+    if (@$libs == 0)
+    {
+	return $total;
+    }
+    for my $lib (@$libs)
+    {
+	my @reads = @$lib{qw(read1 read2)};
+	for my $r (@reads)
+	{
+	    my $stat = eval { $self->app->workspace->stat($r); };
+	    $total += $stat if ref($stat);
+	}
+    }
+    return $total;
 }
 
 sub stage_single_end_libs
