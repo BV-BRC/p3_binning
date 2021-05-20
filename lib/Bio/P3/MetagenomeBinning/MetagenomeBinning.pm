@@ -143,7 +143,7 @@ sub process
 
     #
     # Check for exactly one of our input types;
-    my @input = grep { $_ } @$params{qw(paired_end_libs contigs srr_ids)};
+    my @input = grep { $_ } @$params{qw(paired_end_libs single_end_libs contigs srr_ids)};
     if (@input == 0)
     {
 	die "No input data specified";
@@ -186,6 +186,11 @@ sub process
 	    $self->stage_paired_end_libs($val);
 	    $self->assemble();
 	}
+    }
+    if (my $val = $params->{single_end_libs})
+    {
+	$self->stage_single_end_libs($val);
+	$self->assemble();
     }
     elsif (my $val = $params->{srr_ids})
     {
@@ -297,6 +302,33 @@ sub stage_paired_end_libs
 	 ($p1 ? ("-1", $p1) : ()),
 	 ($p2 ? ("-2", $p2) : ()),
      );
+}
+
+sub stage_single_end_libs
+{
+    my($self, $libs) = @_;
+
+    my @reads;
+
+    if (@$libs == 0)
+    {
+	die "MetagenomeBinning:: stage_paired_end_libs - no libs provided";
+    }
+
+    $self->{megahit_mode} = 1;
+
+    my @staged;
+    for my $lib (@$libs)
+    {
+	my $reads = $lib->{read};
+	my $staged = $self->app->stage_in([$reads], $self->stage_dir, 1);
+	push(@staged, $staged->{$lib->{read}});
+    }
+
+    my $p1 = join(",", @staged);
+
+    push(@{$self->assembly_params},
+	 "-r", $p1);
 }
 
 sub stage_srr_ids
@@ -471,11 +503,8 @@ sub assemble_with_megahit
     # Prior code looked at binning_spades_threads and binning_spades_ram
     # to set these parameters; use the scheduler-allocated value instead.
     #
-    if (my $cpu = $ENV{P3_ALLOCATED_CPU})
-    {
-	push(@$params, "-t", $cpu);
-    }
-
+    my $cpu = $ENV{P3_ALLOCATED_CPU} // 2;
+    push(@$params, "-t", $cpu);
 
     if (my $mem = $ENV{P3_ALLOCATED_MEMORY})
     {
