@@ -191,7 +191,7 @@ sub process
 	    $self->assemble();
 	}
     }
-    if (my $val = $params->{single_end_libs})
+    elsif (my $val = $params->{single_end_libs})
     {
 	$self->stage_single_end_libs($val);
 	$self->assemble();
