@@ -26,7 +26,9 @@ use Bio::KBase::AppService::ClientExt;
 use Bio::KBase::AppService::AppConfig qw(data_api_url db_host db_user db_pass db_name
 					 binning_spades_threads binning_spades_ram
 					 bebop_binning_user bebop_binning_key
-					 seedtk binning_genome_annotation_clientgroup);
+					 seedtk binning_genome_annotation_clientgroup
+					 binning_data_api_url
+					);
 use DBI;
 use File::Slurp;
 
@@ -611,6 +613,7 @@ sub compute_bins
     }
 
     my @cmd = ("bins_generate",
+	       "--dataAPIUrl", binning_data_api_url,
 	       "--statistics-file", "bins.stats.txt",
 	       "--seedProtFasta", $seedprot,
 	       $self->work_dir);
@@ -660,7 +663,7 @@ sub extract_fasta
 
     my $app_list = $self->app_params;
 
-    my $api = P3DataAPI->new(data_api_url);
+    my $api = P3DataAPI->new(binning_data_api_url);
 
     my $idx = 1;
 
