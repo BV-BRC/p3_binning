@@ -853,8 +853,9 @@ sub bin_viruses
 	$vbin->{bin_name} = $bin_name;
 	push @ret_vbins, $vbin;
     }
-    $self->app->workspace->save_file_to_file($self->work_dir . "/vbins.html",
-					     {}, $self->output_folder . "/ViralBins.html", 'html', 1, 1, $self->token);
+    # Don't need this with the other report that looks better.
+    # $self->app->workspace->save_file_to_file($self->work_dir . "/vbins.html",
+    #					     {}, $self->output_folder . "/ViralBins.html", 'html', 1, 1, $self->token);
     return \@ret_vbins;
 }
 
