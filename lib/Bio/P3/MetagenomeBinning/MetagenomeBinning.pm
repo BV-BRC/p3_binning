@@ -970,7 +970,7 @@ sub write_viral_summary_report
 	my $summary_tt = dirname($mpath) . "/ViralBinSummary.tt";
 	-f $summary_tt or die "Summary not found at $summary_tt\n";
 
-	my $url_base = 'https://www.patricbrc.org/view/Genome';
+	my $url_base = 'https://alpha.bv-brc.org/view/Genome';
 
 	my $bins = [];
 	my %vars = (bins => $bins,
