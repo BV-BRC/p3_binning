@@ -1303,7 +1303,7 @@ sub write_summary_report
 	}
 
 	my $html = BinningReports::Summary($self->task_id, $params, $bins_report, $summary_tt,
-					   $group_path, \@geos, \%report_url_map);
+					   $group_path, \@geos, \%report_url_map, "/view/Genome");
 
 	my $output_path = $params->{output_path} . "/." . $params->{output_file};
 	$ws->save_data_to_file($html, {},
