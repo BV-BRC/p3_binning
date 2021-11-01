@@ -863,6 +863,21 @@ sub annotate_viruses
 {
     my($self, $bins) = @_;
 
+    #
+    # We attempt to determine which bins are phage.
+    # Most names seem to have phage in them, but I prefer to
+    # determine this based on taxonomy.
+    # Taxa of phages:
+    # Loebvirae   2732090
+    # Sangervirae 2732091
+    # Trapavirae 2732093
+    # Uroviricota  2731618
+    # Tectiliviricetes 2732529
+    # Lenarviricota 2732407
+    # unclassified bacterial viruses 12333
+    # Cystoviridae 10877
+    # unclassified dsDNA phages 79205
+
     my @good_results;
 
     my $api = P3DataAPI->new(data_api_url);
