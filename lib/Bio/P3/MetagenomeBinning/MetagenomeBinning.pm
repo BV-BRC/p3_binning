@@ -163,6 +163,7 @@ sub process
 	if (@$val == 2 && !ref($val->[0]) && !ref($val->[1]))
 	{
 	    $val = [{ read1 => $val->[0], read2 => $val->[1] }];
+	    $params->{paired_end_libs} = $val;
 	}
 
 	my $size = $self->compute_paired_end_lib_size($val);
