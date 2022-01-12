@@ -74,7 +74,7 @@ sub new
 #
 sub preflight
 {
-    my($app, $app_def, $raw_params, $params) = @_;
+    my($self, $app, $app_def, $raw_params, $params) = @_;
 
     my $cpu = 8;
 
@@ -101,10 +101,33 @@ sub preflight
 	}
     }
 
+    my $mem = "128G";
+
+    #
+    # If we have a large (>400MB) contigs input, bump the memory requirement
+    #
+    if (my $ctg = $params->{contigs})
+    {
+	my $ws = $app->workspace();
+	my $stat = $ws->stat($ctg);
+
+	if (!$stat)
+	{
+	    die "Input contigs not readable\n";
+	}
+
+	my $sz = $stat->size;
+	# print STDERR "size=$sz\n";
+
+	if ($sz > 400_000_000)
+	{
+	    $mem = "300G";
+	}
+    }
 
     my $pf = {
 	cpu => $cpu,
-	memory => "128G",
+	memory => $mem,
 	runtime => 0,
 	storage => 0,
 	is_control_task => 0,
