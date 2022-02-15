@@ -247,7 +247,7 @@ sub process
     {
 	$self->compute_coverage();
 	$self->compute_bins();
-	my $all_bins = $self->extract_fasta();
+	$all_bins = $self->extract_fasta();
 
 	if (@$all_bins == 0)
 	{
