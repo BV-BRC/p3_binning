@@ -59,7 +59,11 @@ This table lists all the known viruses found in the sample.
 <td>[% b.vbin.bin %]</td>
 <td>[% b.vbin.virus_id %]</td>
 <td>[% b.vbin.taxon_id %]</td>
+[% IF b.genome_url -%]
 <td><a target="_blank" href="[% b.genome_url %]">[% b.genome_id %]</a></td>
+[% ELSE -%]
+<td><em>Not annotated</em></td>
+[% END -%]
 <td>[% b.vbin.name %]</td>
 <td>[% b.vbin.length %]</td>
 <td>[% b.vbin.completeness %]</td>

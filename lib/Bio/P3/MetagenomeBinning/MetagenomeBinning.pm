@@ -22,6 +22,7 @@ use File::Copy qw(copy);
 use File::Path qw(make_path remove_tree);
 use Template;
 use Text::CSV_XS qw(csv);
+use Bio::BVBRC::ViralAnnotation::VigorTaxonMap;
 use Bio::KBase::AppService::ClientExt;
 use Bio::KBase::AppService::AppConfig qw(data_api_url db_host db_user db_pass db_name
 					 binning_spades_threads binning_spades_ram
@@ -270,8 +271,8 @@ sub process
 
 	if ($params->{perform_viral_annotation})
 	{
-	    my @good_viruses = $self->annotate_viruses($bins);
-	    $self->write_viral_summary_report(\@good_viruses, $all_bins);
+ 	    my($annotated_bins, $unannotated_bins) = $self->annotate_viruses($bins);
+	    $self->write_viral_summary_report($annotated_bins, $unannotated_bins, $all_bins);
 	}
     }
     
@@ -902,7 +903,12 @@ sub annotate_viruses
     # Cystoviridae 10877
     # unclassified dsDNA phages 79205
 
-    my @good_results;
+    #
+    # We also look up the taxon IDs of the bins in the vigor4 taxonomy map.
+    #
+
+    my @annotated_bins;
+    my @unannotated_bins;
 
     my $api = P3DataAPI->new(data_api_url);
     my $app_spec = $self->find_app_spec("GenomeAnnotation");
@@ -915,6 +921,15 @@ sub annotate_viruses
     	my $code = 1;
 	my $domain = 'Viruses';
 	my $taxon_id = $bin->{taxon_id};
+
+	my $reference_name = Bio::BVBRC::ViralAnnotation::VigorTaxonMap::find_vigor_reference($taxon_id, $api);
+	if (!$reference_name)
+	{
+	    warn "No VIGOR4 reference found for taxon $taxon_id. Skipping annotation.\n";
+	    push(@unannotated_bins, { vbin => $bin });
+	    next;
+	}
+
 	my @res = $api->query("taxonomy", ["eq", 'taxon_id', $taxon_id], ["select", "genetic_code,lineage_names"]);
 	if (@res)
 	{
@@ -967,7 +982,7 @@ sub annotate_viruses
 	    $genome_id = $gto->{id};
 	};
 	
-	push(@good_results, {
+	push(@annotated_bins, {
 	    id => $n++,
 	    genome_id => $genome_id,
 	    app => "App-GenomeAnnotation",
@@ -979,7 +994,7 @@ sub annotate_viruses
 	    vbin => $bin,
 	});
     }
-    return @good_results;
+    return \@annotated_bins, \@unannotated_bins;
 }
 
 sub write_empty_vbin_report
@@ -996,7 +1011,7 @@ sub write_empty_vbin_report
 
 sub write_viral_summary_report
 {
-    my($self, $good, $all_bins) = @_;
+    my($self, $annotated_bins, $unannotated_bins, $all_bins) = @_;
 
     eval {
 
@@ -1010,20 +1025,27 @@ sub write_viral_summary_report
 	my $summary_tt = dirname($mpath) . "/ViralBinSummary.tt";
 	-f $summary_tt or die "Summary not found at $summary_tt\n";
 
-	my $url_base = 'https://alpha.bv-brc.org/view/Genome';
+	my $url_base = 'https://bv-brc.org/view/Genome';
 
 	my $bins = [];
 	my %vars = (bins => $bins,
 		    params => $self->params,
 		    job_id => $self->task_id,
 		    );
-	for my $bin (@$good)
+	for my $bin (@$annotated_bins)
 	{
 	    my $genome_url = "$url_base/$bin->{genome_id}";
 	    my $val = {
 		vbin => $bin->{vbin},
 		genome_id => $bin->{genome_id},
 		genome_url => $genome_url,
+	    };
+	    push(@$bins, $val);
+	}
+	for my $bin (@$unannotated_bins)
+	{
+	    my $val = {
+		vbin => $bin->{vbin},
 	    };
 	    push(@$bins, $val);
 	}
