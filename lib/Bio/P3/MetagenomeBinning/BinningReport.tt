@@ -1,10 +1,12 @@
+
+
 <h1>Metagenomics Binning Report for job [% job_id %]</h1>
 
 <h2>Input data</h2>
 [% IF params.contigs %]
 Contigs file [% params.contigs %]
 [% ELSE %]
-Reads files [% params.paired_end_libs.1 %] and [% params.paired_end_libs.2 %]
+Reads files [% params.paired_end_libs.0.read1 %] and [% params.paired_end_libs.0.read2 %]
 [% END %]
 <p>
 <h2>Generated bins</h2>

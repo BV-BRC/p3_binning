@@ -90,6 +90,14 @@
 	    "type": "string"
 	},
 	{
+	    "id": "viral_recipe",
+	    "label": "Viral nnotation recipe",
+	    "required": 0,
+	    "default": null,
+	    "desc": "Specifies a non-default annotation recipe for annotation of viral bins",
+	    "type": "string"
+	},
+	{
 	    "id":"output_path",
 	    "label":"Output Folder",
 	    "required": 1,
@@ -106,6 +114,22 @@
 	    "type":"wsid"
 	},
 	{
+	    "id": "force_local_assembly",
+	    "label": "Force local assembly",
+	    "required": 1,
+	    "default": false,
+	    "type": "bool",
+	    "desc": "If set, disable the use of remote clusters for assembly"
+	},
+	{
+	    "id": "force_inline_annotation",
+	    "label": "Force inline annotation",
+	    "required": 0,
+	    "default": true,
+	    "type": "bool",
+	    "desc": "If set, disable the use of the cluster for annotation"
+	},
+	{
 	    "id": "perform_viral_binning",
 	    "label": "Perform viral binning",
 	    "required": 0,
@@ -120,6 +144,22 @@
 	    "default": false,
 	    "type": "bool",
 	    "desc": "If set, perform viral annotation and loading of viral genomes into PATRIC database of any binned viruses"
+	},
+	{
+	    "id": "perform_bacterial_annotation",
+	    "label": "Perform bacterial annotation",
+	    "required": 0,
+	    "default": true,
+	    "type": "bool",
+	    "desc": "If set, perform bacterial annotation and loading of bacterial genomes into PATRIC database of any binned bacterial genomes"
+	},
+	{
+	    "id": "assembler",
+	    "label": "Assembler to use",
+	    "required": 0,
+	    "default": "",
+	    "type": "string",
+	    "desc": "If set, use the given assembler"
 	}
     ]
 }

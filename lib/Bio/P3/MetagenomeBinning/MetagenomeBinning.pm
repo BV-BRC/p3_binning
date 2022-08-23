@@ -16,11 +16,20 @@ use Cwd;
 use base 'Class::Accessor';
 use JSON::XS;
 use Module::Metadata;
+use IPC::Run;
+use File::Basename;
+use File::Copy qw(copy);
+use File::Path qw(make_path remove_tree);
+use Template;
+use Text::CSV_XS qw(csv);
+use Bio::BVBRC::ViralAnnotation::VigorTaxonMap;
 use Bio::KBase::AppService::ClientExt;
 use Bio::KBase::AppService::AppConfig qw(data_api_url db_host db_user db_pass db_name
 					 binning_spades_threads binning_spades_ram
 					 bebop_binning_user bebop_binning_key
-					 seedtk binning_genome_annotation_clientgroup);
+					 seedtk binning_genome_annotation_clientgroup
+					 binning_data_api_url
+					);
 use DBI;
 use File::Slurp;
 
@@ -58,7 +67,7 @@ sub new
 }
 
 #
-# Preflight. The CGA app itself has fairly requirements; it spends most of its
+# Preflight. The CGA app itself has fairly small requirements; it spends most of its
 # time waiting on other applications.
 #
 # We don't mark as a control task, however, because it does have some signficant
@@ -66,11 +75,60 @@ sub new
 #
 sub preflight
 {
-    my($app, $app_def, $raw_params, $params) = @_;
+    my($self, $app, $app_def, $raw_params, $params) = @_;
+
+    my $cpu = 8;
+
+    # if (!$params->{force_local_assembly} && bebop_binning_user && bebop_binning_key)
+    # {
+    # 	$cpu = 1;
+    # }
+
+    #
+    # Require the checkv database if we are doing viral binning.
+    # Also bump the cpu request up.
+    #
+    if ($params->{perform_viral_binning})
+    {
+	$cpu = 8;
+	my $db = $ENV{CHECKVDB};
+	if (!defined($db))
+	{
+	    die "Checkv database environment CHECKVDB not defined\n";
+	}
+	elsif (! -s $db)
+	{
+	    die "Checkv database not found at $db\n";
+	}
+    }
+
+    my $mem = "128G";
+
+    #
+    # If we have a large (>400MB) contigs input, bump the memory requirement
+    #
+    if (my $ctg = $params->{contigs})
+    {
+	my $ws = $app->workspace();
+	my $stat = $ws->stat($ctg);
+
+	if (!$stat)
+	{
+	    die "Input contigs not readable\n";
+	}
+
+	my $sz = $stat->size;
+	# print STDERR "size=$sz\n";
+
+	if ($sz > 400_000_000)
+	{
+	    $mem = "300G";
+	}
+    }
 
     my $pf = {
-	cpu => 1,
-	memory => "128G",
+	cpu => $cpu,
+	memory => $mem,
 	runtime => 0,
 	storage => 0,
 	is_control_task => 0,
@@ -111,7 +169,7 @@ sub process
 
     #
     # Check for exactly one of our input types;
-    my @input = grep { $_ } @$params{qw(paired_end_libs contigs srr_ids)};
+    my @input = grep { $_ } @$params{qw(paired_end_libs single_end_libs contigs srr_ids)};
     if (@input == 0)
     {
 	die "No input data specified";
@@ -123,21 +181,25 @@ sub process
 
     if (my $val = $params->{paired_end_libs})
     {
-	if ($self->bebop)
+	#
+	# Check for new form
+	#
+	if (@$val == 2 && !ref($val->[0]) && !ref($val->[1]))
 	{
-	    #
-	    # Check for new form
-	    #
-	    
-	    if (@$val == 2 && !ref($val->[0]) && !ref($val->[1]))
-	    {
-		$val = [{ read1 => $val->[0], read2 => $val->[1] }];
-	    }
-	    
-	    if (@$val != 1)
-	    {
-		die "MetagenomeBinning:: only one paired end library may be provided";
-	    }
+	    $val = [{ read1 => $val->[0], read2 => $val->[1] }];
+	    $params->{paired_end_libs} = $val;
+	}
+
+	my $size = $self->compute_paired_end_lib_size($val);
+	printf STDERR "Paired end library size is %.2f GB\n", $size/1e9;
+
+	if (!$params->{force_local_assembly} &&
+	    $self->bebop &&
+	    $size > 10_000_000_000 &&
+	    @$val == 1 &&
+	    ($params->{assembler} eq 'auto' || $params->{assembler} eq 'metaspades')
+	   )
+	{
 	    $self->bebop->assemble_paired_end_libs($output_folder, $val->[0], $self->app->task_id);
 	    my $local_contigs = "$assembly_dir/contigs.fasta";
 	    $self->contigs($local_contigs);
@@ -156,9 +218,16 @@ sub process
 	    $self->assemble();
 	}
     }
+    elsif (my $val = $params->{single_end_libs})
+    {
+	$self->stage_single_end_libs($val);
+	$self->assemble();
+    }
     elsif (my $val = $params->{srr_ids})
     {
-	if ($self->bebop)
+	# current bebop code doesn't grok SRA
+	
+	if (0 && $self->bebop)
 	{
 	    $self->bebop->assemble_srr_ids($val);
 	}
@@ -173,82 +242,40 @@ sub process
 	$self->stage_contigs($params->{contigs});
     }
 
-    $self->compute_coverage();
-    $self->compute_bins();
-    my $all_bins = $self->extract_fasta();
-
-    my $n_bins = @$all_bins;
-    if ($n_bins == 0)
-    {
-	#
-	# No bins found. Write a simple HTML stating that.
-	#
-	my $report = "<h1>No bins found</h1>\n<p>No bins were found in this sample.\n";
-	$app->workspace->save_data_to_file($report, {},
-					   "$output_folder/BinningReport.html", 'html', 1, 0, $app->token);
-	return;
-    }
-
-    my $app_service = Bio::KBase::AppService::ClientExt->new();
-
+    my $all_bins = [];
     my @good_results;
-
-    my $annotations_inline = $ENV{P3_BINNING_ANNOTATIONS_INLINE};
-    if ($annotations_inline)
+    if ($params->{perform_bacterial_annotation} || $params->{perform_bacterial_binning})
     {
-	@good_results = $self->compute_annotations();
+	$self->compute_coverage();
+	$self->compute_bins();
+	$all_bins = $self->extract_fasta();
+
+	if (@$all_bins == 0)
+	{
+	    $self->write_empty_bin_report();
+	}
+	elsif ($params->{perform_bacterial_annotation})
+	{
+	    @good_results = $self->annotate_bins($all_bins);
+	}
     }
     else
     {
-	my @tasks;
-	if ($ENV{BINNING_TEST})
-	{
-	    @tasks = qw(0da446f2-8274-45f1-856b-2b06c0d4154e
-			5ea8d032-1119-4713-836d-088e13848e2f
-			15f43bdf-e1dc-45a8-8a1c-0b4561324d68);
-	}
-	else
-	{
-	    @tasks = $self->submit_annotations($app_service);
-	} 
-	print STDERR "Awaiting completion of $n_bins annotations\n";
-	my $results = $app_service->await_task_completion(\@tasks, 10, 0);
-	print STDERR "Tasks completed\n";
-	
-	#
-	# Examine task output to ensure all succeeded
-	#
-	my $fail = 0;
-	for my $res (@$results)
-	{
-	    if ($res->{status} eq 'completed')
-	    {
-		push(@good_results, $res);
-	    }
-	    else
-	    {
-		warn "Task $res->{id} resulted with unsuccessful status $res->{status}\n" . Dumper($res);
-		$fail++;
-	    }
-	}
-	
-	if ($fail > 0)
-	{
-	    if ($fail == @$results)
-	    {
-		die "Annotation failed on all $fail bins\n";
-	    }
-	    else
-	    {
-		my $n = @$results;
-		warn "Annotation failed on $fail of $n bins, continuing\n";
-	    }
-	}
-    }	
-    #
-    # Annotations are complete. Pull data and write the summary report.
-    #
+	IPC::Run::run(["bins_coverage", $self->contigs(), $self->work_dir]);
+	symlink("contigs.fasta", $self->work_dir . "/unbinned.fasta") || die "symlink failed $!";
+    }
 
+    if ($params->{perform_viral_annotation} || $params->{perform_viral_binning})
+    {
+	my $bins = $self->bin_viruses();
+
+	if ($params->{perform_viral_annotation})
+	{
+ 	    my($annotated_bins, $unannotated_bins) = $self->annotate_viruses($bins);
+	    $self->write_viral_summary_report($annotated_bins, $unannotated_bins, $all_bins);
+	}
+    }
+    
     $self->write_summary_report(\@good_results, $all_bins, $self->app->workspace, $self->token);
 }
 
@@ -273,6 +300,9 @@ sub stage_paired_end_libs
     # Check for new form
     #
 
+    my @pairs_1;
+    my @pairs_2;
+
     if (@$libs == 2 && !ref($libs->[0]) && !ref($libs->[1]))
     {
 	@reads = @$libs;
@@ -285,17 +315,125 @@ sub stage_paired_end_libs
 	}
 	elsif (@$libs > 1)
 	{
-	    die "MetagenomeBinning:: stage_paired_end_libs - only one lib may be provided";
+	    # die "MetagenomeBinning:: stage_paired_end_libs - only one lib may be provided";
+	    $self->{megahit_mode} = 1;
 	}
 
-	my $lib = $libs->[0];
-	@reads = @$lib{qw(read1 read2)};
+	for my $lib (@$libs)
+	{
+	    @reads = @$lib{qw(read1 read2)};
+	    my $staged = $self->app->stage_in(\@reads, $self->stage_dir, 1);
+	    push(@pairs_1, $staged->{$lib->{read1}});
+	    push(@pairs_2, $staged->{$lib->{read2}});
+	}
     }
-    my $staged = $self->app->stage_in(\@reads, $self->stage_dir, 1);
+    my $p1 = join(",", @pairs_1);
+    my $p2 = join(",", @pairs_2);
+    push(@{$self->assembly_params},
+	 ($p1 ? ("-1", $p1) : ()),
+	 ($p2 ? ("-2", $p2) : ()),
+     );
+}
+
+sub compute_paired_end_lib_size
+{
+    my($self, $libs) = @_;
+
+    my $total = 0;
+    
+    if (@$libs == 0)
+    {
+	return $total;
+    }
+    for my $lib (@$libs)
+    {
+	my @reads = @$lib{qw(read1 read2)};
+	for my $r (@reads)
+	{
+	    my $stat = eval { $self->app->workspace->stat($r); };
+	    $total += $stat if ref($stat);
+	}
+    }
+    return $total;
+}
+
+sub stage_single_end_libs
+{
+    my($self, $libs) = @_;
+
+    my @reads;
+
+    if (@$libs == 0)
+    {
+	die "MetagenomeBinning:: stage_paired_end_libs - no libs provided";
+    }
+
+    $self->{megahit_mode} = 1;
+
+    my @staged;
+    for my $lib (@$libs)
+    {
+	my $reads = $lib->{read};
+	my $staged = $self->app->stage_in([$reads], $self->stage_dir, 1);
+	push(@staged, $staged->{$lib->{read}});
+    }
+
+    my $p1 = join(",", @staged);
 
     push(@{$self->assembly_params},
-	 "-1", $staged->{$reads[0]},
-	 "-2", $staged->{$reads[1]});
+	 "-r", $p1);
+}
+
+sub stage_srr_ids
+{
+    my($self, $srr_ids) = @_;
+
+    my $stage = $self->stage_dir;
+
+    my @pairs_1;
+    my @pairs_2;
+    my @unpaired;
+    for my $id (@$srr_ids)
+    {
+	my $dir = "$stage/$id";
+	remove_tree($dir);
+	make_path($dir);
+	my $ok = IPC::Run::run(["p3-sra", "--id", $id, "--out", $dir]);
+	if (!$ok)
+	{
+	    die "Error staging SRA sample $id\n";
+	}
+	my @files = glob("$dir/*fastq");
+	if (@files == 1)
+	{
+	    push(@unpaired, $files[0]);
+	}
+	elsif (@files == 2)
+	{
+	    push(@pairs_1, $files[0]);
+	    push(@pairs_2, $files[1]);
+	}
+	else
+	{
+	    die "Unxpected file list from loading $id: @files\n";
+	}
+    }
+    if (@unpaired || @pairs_1 > 1)
+    {
+	if ($self->params->{assembler} eq 'metaspades')
+	{
+	    die "This job cannot be processed using metaspades. It includes unpaired reads or more than one paired-read library\n";
+	}
+	$self->{megahit_mode} = 1;
+    }
+    my $p1 = join(",", @pairs_1);
+    my $p2 = join(",", @pairs_2);
+    my $up = join(",", @unpaired);
+    push(@{$self->assembly_params},
+	 ($p1 ? ("-1", $p1) : ()),
+	 ($p2 ? ("-2", $p2) : ()),
+	 ($up ? ("-r", $up) : ()),
+     );
 }
 
 #
@@ -340,18 +478,51 @@ sub assemble
 {
     my ($self) = @_;
 
+    if ($self->{megahit_mode} || $self->params->{assembler} eq 'megahit')
+    {
+	return $self->assemble_with_megahit();
+    }
+    else
+    {
+	return $self->assemble_with_spades();
+    }
+}
+
+sub assemble_with_spades
+{
+    my($self) = @_;
+
     my $params = $self->assembly_params;
     push(@$params,
 	 "--meta",
+	 "--only-assemble",
 	 "-o", $self->assembly_dir);
 
-    if (binning_spades_threads)
+    #
+    # Prior code looked at binning_spades_threads and binning_spades_ram
+    # to set these parameters; use the scheduler-allocated value instead.
+    #
+    if (my $cpu = $ENV{P3_ALLOCATED_CPU})
     {
-	push(@$params, "--threads", binning_spades_threads);
+	push(@$params, "--threads", $cpu);
     }
-    if (binning_spades_ram)
+
+
+    if (my $mem = $ENV{P3_ALLOCATED_MEMORY})
     {
-	push(@$params, "--memory", binning_spades_ram);
+	my $bytes;
+	my %fac = (k => 1024, m => 1024*1024, g => 1024*1024*1024, t => 1024*1024*1024*1024 );
+	my($val, $suffix) = $mem =~ /^(.*)([mkgt])$/i;
+	if ($suffix)
+	{
+	    $bytes = $val * $fac{lc($suffix)};
+	}
+	else
+	{
+	    $bytes = $mem;
+	}
+	$mem = int($bytes / (1024*1024*1024));
+	push(@$params, "--memory", $mem);
     }
     
     my @cmd = ($self->spades, @$params);
@@ -370,6 +541,60 @@ sub assemble
 					     $self->output_folder . "/params.txt", 'txt', 1, 1, $self->token);
 
     $self->contigs($self->assembly_dir . "/contigs.fasta");
+}
+
+sub assemble_with_megahit
+{
+    my($self) = @_;
+
+    my $params = $self->assembly_params;
+    rmdir($self->assembly_dir);
+    push(@$params,
+	 "-o", $self->assembly_dir);
+
+    #
+    # Prior code looked at binning_spades_threads and binning_spades_ram
+    # to set these parameters; use the scheduler-allocated value instead.
+    #
+    my $cpu = $ENV{P3_ALLOCATED_CPU} // 2;
+    push(@$params, "-t", $cpu);
+
+    if (my $mem = $ENV{P3_ALLOCATED_MEMORY})
+    {
+	my $bytes;
+	my %fac = (k => 1024, m => 1024*1024, g => 1024*1024*1024, t => 1024*1024*1024*1024 );
+	my($val, $suffix) = $mem =~ /^(.*)([mkgt])$/i;
+	if ($suffix)
+	{
+	    $bytes = $val * $fac{lc($suffix)};
+	}
+	else
+	{
+	    $bytes = $mem;
+	}
+	$mem = int($bytes / (1024*1024*1024));
+	push(@$params, "--memory", $bytes);
+    }
+    
+    my @cmd = ("megahit", @$params);
+    print STDERR "@cmd\n";
+    my $rc = system(@cmd);
+    #my $rc = 0;
+    if ($rc != 0)
+    {
+	die "Error running assembly command: @cmd\n";
+    }
+
+    $self->app->workspace->save_file_to_file($self->assembly_dir . "/final.contigs.fa", {},
+					     $self->output_folder . "/contigs.fasta", 'contigs', 1, 1, $self->token);
+    $self->app->workspace->save_file_to_file($self->assembly_dir . "/log", {},
+					     $self->output_folder . "/megahit.log", 'txt', 1, 1, $self->token);
+    $self->app->workspace->save_file_to_file($self->assembly_dir . "/opts.txt", {},
+					     $self->output_folder . "/opts.txt", 'txt', 1, 1, $self->token) if -f $self->assembly_dir . "/opts.txt";
+    $self->app->workspace->save_file_to_file($self->assembly_dir . "/options.json", {},
+					     $self->output_folder . "/options.json", 'json', 1, 1, $self->token) if -f $self->assembly_dir . "/options.json";
+
+    $self->contigs($self->assembly_dir . "/final.contigs.fa");
 }
 
 #
@@ -413,6 +638,7 @@ sub compute_bins
     }
 
     my @cmd = ("bins_generate",
+	       "--dataAPIUrl", binning_data_api_url,
 	       "--statistics-file", "bins.stats.txt",
 	       "--seedProtFasta", $seedprot,
 	       $self->work_dir);
@@ -424,6 +650,8 @@ sub compute_bins
 					     $self->output_folder . "/unbinned.fasta", 'contigs', 1, 1, $self->token);
     $self->app->workspace->save_file_to_file($self->work_dir . "/unplaced.fasta", {},
 					     $self->output_folder . "/unplaced.fasta", 'contigs', 1, 1, $self->token);
+    $self->app->workspace->save_file_to_file("bins.stats.txt", {},
+					     $self->output_folder . "/bins.stats.txt", 'txt', 1, 1, $self->token);
     $self->app->workspace->save_file_to_file("bins.stats.txt", {},
 					     $self->output_folder . "/bins.stats.txt", 'txt', 1, 1, $self->token);
 }
@@ -460,7 +688,7 @@ sub extract_fasta
 
     my $app_list = $self->app_params;
 
-    my $api = P3DataAPI->new(data_api_url);
+    my $api = P3DataAPI->new(binning_data_api_url);
 
     my $idx = 1;
 
@@ -530,7 +758,6 @@ sub extract_fasta
 	    taxonomy_id => $taxon_id,
 	    reference_genome_id => $bin->{refGenomes}->[0],
 	    output_path => $self->output_folder,
-#	    output_path => $self->params->{output_path},
 	    output_file => $bin_base_name,
 #	    _parent_job => $self->app->task_id,
 	    queue_nowait => 1,
@@ -556,7 +783,291 @@ sub extract_fasta
     #
     return $all_bins;
 }
-    
+
+sub write_empty_bin_report
+{
+    my($self) = @_;
+
+    #
+    # No bins found. Write a simple HTML stating that.
+    #
+    my $report = "<h1>No bins found</h1>\n<p>No bins were found in this sample.\n";
+    $self->app->workspace->save_data_to_file($report, {},
+					     $self->output_folder . "/BinningReport.html", 'html', 1, 0, $self->app->token);
+}
+
+sub annotate_bins
+{
+    my($self, $all_bins) = @_;
+
+    my @good_results;
+
+    my $annotations_inline = $ENV{P3_BINNING_ANNOTATIONS_INLINE} || $self->params->{force_inline_annotation};
+    if ($annotations_inline)
+    {
+	@good_results = $self->compute_annotations_local();
+    }
+    else
+    {
+	@good_results = $self->compute_annotations_cluster();
+    }
+
+
+}
+
+#
+# Use vbins_generate to bin the viruses.
+# vbins_generate /disks/patric-common/runtime/checkv-db/checkv-db-v1.0 `pwd`
+#
+sub bin_viruses
+{
+    my($self) = @_;
+
+    if (! -s $self->work_dir . "/unbinned.fasta")
+    {
+	warn "No unbinned data for viral binning\n";
+	return ();
+    }
+
+    my $cmd = "vbins_generate";
+    my @params;
+    if (my $cpu = $ENV{P3_ALLOCATED_CPU})
+    {
+	push(@params, "--threads", $cpu);
+    }
+    push(@params, $ENV{CHECKVDB}, $self->work_dir);
+
+    my @cmd = ($cmd, @params);
+    print STDERR "@cmd\n";
+    my $rc = system(@cmd);
+    if ($rc != 0)
+    {
+	warn "Viral binning failed with $rc: @cmd\n";
+	return ();
+    }
+
+    my $vbins = eval { csv(in => $self->work_dir . "/vbins.tsv", headers => "auto", sep_char => "\t") };
+    if (@$vbins == 0)
+    {
+	warn "No viral bins created\n";
+	$self->write_empty_vbin_report();
+	return ();
+    }
+
+    my @ret_vbins;
+    for my $vbin (@$vbins)
+    {
+	#
+	# Force conversion to numeric for the numeric fields.
+	#
+	for my $f (qw(pct_error length completeness coverage))
+	{
+	    $vbin->{$f} += 0 if exists $vbin->{$f};
+	}
+	
+	my $bin_name = "vBin$vbin->{bin}.fa";
+	my $fa_file = $self->work_dir . "/$bin_name";
+	if (! -f $fa_file)
+	{
+	    print STDERR "Could not find $fa_file\n";
+	    next;
+	}
+	my $ws_path = $self->output_folder . "/$bin_name";
+	$self->app->workspace->save_file_to_file($fa_file, $vbin, $ws_path, 'contigs', 1, 1, $self->token);
+	$vbin->{ws_path} = $ws_path;
+	$vbin->{bin_name} = $bin_name;
+	push @ret_vbins, $vbin;
+    }
+    # Don't need this with the other report that looks better.
+    # $self->app->workspace->save_file_to_file($self->work_dir . "/vbins.html",
+    #					     {}, $self->output_folder . "/ViralBins.html", 'html', 1, 1, $self->token);
+    return \@ret_vbins;
+}
+
+sub annotate_viruses
+{
+    my($self, $bins) = @_;
+
+    #
+    # We attempt to determine which bins are phage.
+    # Most names seem to have phage in them, but I prefer to
+    # determine this based on taxonomy.
+    # Taxa of phages:
+    # Loebvirae   2732090
+    # Sangervirae 2732091
+    # Trapavirae 2732093
+    # Uroviricota  2731618
+    # Tectiliviricetes 2732529
+    # Lenarviricota 2732407
+    # unclassified bacterial viruses 12333
+    # Cystoviridae 10877
+    # unclassified dsDNA phages 79205
+
+    #
+    # We also look up the taxon IDs of the bins in the vigor4 taxonomy map.
+    #
+
+    my @annotated_bins;
+    my @unannotated_bins;
+
+    my $api = P3DataAPI->new(data_api_url);
+    my $app_spec = $self->find_app_spec("GenomeAnnotation");
+
+    my $sub_time = time;
+    my $n = 1;
+    my $recipe = $self->params->{viral_recipe} // "viral";
+    for my $bin (@$bins)
+    {
+    	my $code = 1;
+	my $domain = 'Viruses';
+	my $taxon_id = $bin->{taxon_id};
+
+	my $reference_name = Bio::BVBRC::ViralAnnotation::VigorTaxonMap::find_vigor_reference($taxon_id, $api);
+	if (!$reference_name)
+	{
+	    warn "No VIGOR4 reference found for taxon $taxon_id. Skipping annotation.\n";
+	    push(@unannotated_bins, { vbin => $bin });
+	    next;
+	}
+
+	my @res = $api->query("taxonomy", ["eq", 'taxon_id', $taxon_id], ["select", "genetic_code,lineage_names"]);
+	if (@res)
+	{
+	    my $lineage;
+	    ($code, $lineage) = @{$res[0]}{'genetic_code', 'lineage_names'};
+	    shift @$lineage if ($lineage->[0] =~ /cellular organisms/);
+	    $domain = $lineage->[0];
+	}
+
+	$bin->{domain} = $domain;
+	$bin->{genetic_code} = $code;
+
+	(my $bin_base_name = $bin->{bin_name}) =~ s/\.[^.]+$//;
+
+	my $descr = {
+	    contigs => $bin->{ws_path},
+	    code => $code,
+	    domain => $domain,
+	    scientific_name=> $bin->{name},
+	    taxonomy_id => $taxon_id,
+	    output_path => $self->output_folder,
+	    output_file => $bin_base_name,
+#	    _parent_job => $self->app->task_id,
+	    queue_nowait => 1,
+	    analyze_quality => 0,
+	    ($self->params->{skip_indexing} ? (skip_indexing => 1) : ()),
+	    recipe => $recipe,
+	};
+
+	my $json = JSON::XS->new->pretty->canonical();
+
+	my $tmp = File::Temp->new;
+	print $tmp $json->encode($descr);
+	close($tmp);
+	my @cmd = ("App-GenomeAnnotation", "xx", $app_spec, "$tmp");
+	print STDERR "Run annotation: @cmd\n";
+	my $start = time;
+	my $rc = system(@cmd);
+	my $end = time;
+	if ($rc != 0)
+	{
+	    warn "Annotation failed with rc=$rc\n";
+	    next;
+	}
+
+	my $gto;
+	my $genome_id;
+	eval {
+	    $gto = $self->app->workspace->download_json("$descr->{output_path}/.$descr->{output_file}/$descr->{output_file}.genome");
+	    $genome_id = $gto->{id};
+	};
+	
+	push(@annotated_bins, {
+	    id => $n++,
+	    genome_id => $genome_id,
+	    app => "App-GenomeAnnotation",
+	    parameters => $descr,
+	    user_id => 'immediate-user',
+	    submit_time => strftime("%Y-%m-%dT%H:%M:%SZ", gmtime $sub_time),
+	    start_time => strftime("%Y-%m-%dT%H:%M:%SZ", gmtime $start),
+	    completed_time => strftime("%Y-%m-%dT%H:%M:%SZ", gmtime $end),
+	    vbin => $bin,
+	});
+    }
+    return \@annotated_bins, \@unannotated_bins;
+}
+
+sub write_empty_vbin_report
+{
+    my($self) = @_;
+
+    #
+    # No bins found. Write a simple HTML stating that.
+    #
+    my $report = "<h1>No viral bins found</h1>\n<p>No viral bins were found in this sample.\n";
+    $self->app->workspace->save_data_to_file($report, {},
+					     $self->output_folder . "/ViralBinningReport.html", 'html', 1, 0, $self->app->token);
+}
+
+sub write_viral_summary_report
+{
+    my($self, $annotated_bins, $unannotated_bins, $all_bins) = @_;
+
+    eval {
+
+	#
+	# Find template.
+	#
+	
+	my $mpath = Module::Metadata->find_module_by_name(__PACKAGE__);
+	$mpath =~ s/\.pm$//;
+	
+	my $summary_tt = dirname($mpath) . "/ViralBinSummary.tt";
+	-f $summary_tt or die "Summary not found at $summary_tt\n";
+
+	my $url_base = 'https://bv-brc.org/view/Genome';
+
+	my $bins = [];
+	my %vars = (bins => $bins,
+		    params => $self->params,
+		    job_id => $self->task_id,
+		    );
+	for my $bin (@$annotated_bins)
+	{
+	    my $genome_url = "$url_base/$bin->{genome_id}";
+	    my $val = {
+		vbin => $bin->{vbin},
+		genome_id => $bin->{genome_id},
+		genome_url => $genome_url,
+	    };
+	    push(@$bins, $val);
+	}
+	for my $bin (@$unannotated_bins)
+	{
+	    my $val = {
+		vbin => $bin->{vbin},
+	    };
+	    push(@$bins, $val);
+	}
+
+	my $templ = Template->new(ABSOLUTE => 1);
+	my $html;
+
+	print STDERR Dumper(\%vars);
+	$templ->process($summary_tt, \%vars, \$html);
+
+	my $output_path = $self->params->{output_path} . "/." . $self->params->{output_file};
+	$self->app->workspace->save_data_to_file($html, {},
+						 "$output_path/ViralBinningReport.html", 'html', 1, 0);
+    };
+    if ($@)
+    {
+	warn "Error creating final viral binning report: $@";
+    }
+}
+
+
+
 sub write_db_record
 {
     my($self, $n_children) = @_;
@@ -573,13 +1084,58 @@ sub write_db_record
     $dbh->commit();
 }
 
+sub compute_annotations_cluster
+{
+    my($self) = @_;
+
+    my $app_service = Bio::KBase::AppService::ClientExt->new();
+
+    my @tasks = $self->submit_annotations($app_service);
+
+    print STDERR "Awaiting completion of " . scalar(@tasks) . " annotations\n";
+    my $results = $app_service->await_task_completion(\@tasks, 10, 0);
+    print STDERR "Tasks completed\n";
+	
+    #
+    # Examine task output to ensure all succeeded
+    #
+    my @good_results;
+    my $fail = 0;
+    for my $res (@$results)
+    {
+	if ($res->{status} eq 'completed')
+	{
+	    push(@good_results, $res);
+	}
+	else
+	{
+	    warn "Task $res->{id} resulted with unsuccessful status $res->{status}\n" . Dumper($res);
+	    $fail++;
+	}
+    }
+    
+    if ($fail > 0)
+    {
+	if ($fail == @$results)
+	{
+	    die "Annotation failed on all $fail bins\n";
+	}
+	else
+	{
+	    my $n = @$results;
+	    warn "Annotation failed on $fail of $n bins, continuing\n";
+	}
+    }
+    return @good_results;
+}	
+
 #
 # Compute annotations inline by invoking the annotation script.
 # Mostly used for testing, but may be useful for standalone implementation.
 #
 # Returns a list of Task hashes.
 #
-sub compute_annotations
+sub compute_annotations_local
 {
     my($self) = @_;
 
@@ -809,7 +1365,7 @@ sub write_summary_report
 	}
 
 	my $html = BinningReports::Summary($self->task_id, $params, $bins_report, $summary_tt,
-					   $group_path, \@geos, \%report_url_map);
+					   $group_path, \@geos, \%report_url_map, "/view/Genome");
 
 	my $output_path = $params->{output_path} . "/." . $params->{output_file};
 	$ws->save_data_to_file($html, {},

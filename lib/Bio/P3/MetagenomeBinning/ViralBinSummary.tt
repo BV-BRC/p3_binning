@@ -1,0 +1,73 @@
+<style type="text/css">
+div.body {
+    font-family: Arial, sans-serif;
+    color: #333333;
+    font-weight: 200;
+    font-size: small;
+    background: #FCFCFC;
+}
+table.p3basic, table.p3basic th,
+table.p3basic td, table.p3basic tr {
+    border-style: inset;
+    border-collapse: collapse;
+    vertical-align: top;
+    padding: 3px;
+}
+table.p3basic th {
+    text-align: left;
+    background: #EEEEEE;
+}
+</style>
+
+
+<h1>Virus Binning Summary for Job [% job_id %]</h1>
+
+<h2>Input data</h2>
+[% IF params.contigs %]
+Contigs file [% params.contigs %]
+[% ELSE %]
+Reads files [% params.paired_end_libs.1 %] and [% params.paired_end_libs.2 %]
+[% END %]
+<p>
+<h2>Generated bins</h2>
+
+This table lists all the known viruses found in the sample.
+
+<table class='p3basic'>
+[% PROCESS qual_headers -%]
+[% FOR b IN bins -%]
+[% PROCESS qual_row -%]
+[% END -%]
+</table>
+
+[% BLOCK qual_headers -%]
+<tr>
+<th>Bin</th>
+<th>Virus ID</th>
+<th>Taxon ID</th>
+<th>Genome ID</th>
+<th>Genome Name</th>
+<th>Length</th>
+<th>Completeness (%)</th>
+<th>Error (%)</th>
+<th>Coverage</th>
+</tr>
+[% END -%]
+
+[% BLOCK qual_row -%]
+<tr>
+<td>[% b.vbin.bin %]</td>
+<td>[% b.vbin.virus_id %]</td>
+<td>[% b.vbin.taxon_id %]</td>
+[% IF b.genome_url -%]
+<td><a target="_blank" href="[% b.genome_url %]">[% b.genome_id %]</a></td>
+[% ELSE -%]
+<td><em>Not annotated</em></td>
+[% END -%]
+<td>[% b.vbin.name %]</td>
+<td>[% b.vbin.length %]</td>
+<td>[% b.vbin.completeness %]</td>
+<td>[% b.vbin.pct_error %]</td>
+<td>[% b.vbin.coverage %]</td>
+</tr>
+[% END -%]
