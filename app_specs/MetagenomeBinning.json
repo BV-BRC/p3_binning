@@ -130,6 +130,14 @@
 	    "desc": "If set, disable the use of the cluster for annotation"
 	},
 	{
+	    "id": "perform_bacterial_binning",
+	    "label": "Perform bacterial binning",
+	    "required": 0,
+	    "default": true,
+	    "type": "bool",
+	    "desc": "If set, perform bacterial binning"
+	},
+	{
 	    "id": "perform_viral_binning",
 	    "label": "Perform viral binning",
 	    "required": 0,
