@@ -168,6 +168,14 @@
 	    "default": "",
 	    "type": "string",
 	    "desc": "If set, use the given assembler"
+	},
+	{
+	    "id": "danglen",
+	    "label": "Dangling element length",
+	    "required": 0,
+	    "default": "50",
+	    "type": "string",
+	    "desc": "DNA kmer size for last-chance contig binning. Set to 0 to disable this step"
 	}
     ]
 }

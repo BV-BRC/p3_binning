@@ -640,11 +640,20 @@ sub compute_bins
 	}
     }
 
+    my @danglen;
+    if (exists $self->params->{danglen})
+    {
+	push(@danglen, "--danglen", $self->params->{danglen});
+    }
+
     my @cmd = ("bins_generate",
 	       "--dataAPIUrl", binning_data_api_url,
 	       "--statistics-file", "bins.stats.txt",
 	       "--seedProtFasta", $seedprot,
+	       @danglen,
 	       $self->work_dir);
+
+    print STDERR "Binning: @cmd\n";
     my $rc = system(@cmd);
 
     $rc == 0 or die "Error $rc computing bins: @cmd";
