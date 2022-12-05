@@ -640,17 +640,25 @@ sub compute_bins
 	}
     }
 
-    my @danglen;
+    my @extra_params;
     if (exists $self->params->{danglen})
     {
-	push(@danglen, "--danglen", $self->params->{danglen});
+	push(@extra_params, "--danglen", $self->params->{danglen});
+    }
+    if (exists $self->params->{min_contig_len})
+    {
+	push(@extra_params, "--lenFilter", $self->params->{min_contig_len});
+    }
+    if (exists $self->params->{min_contig_cov})
+    {
+	push(@extra_params, "--covgFilter", $self->params->{min_contig_cov});
     }
 
     my @cmd = ("bins_generate",
 	       "--dataAPIUrl", binning_data_api_url,
 	       "--statistics-file", "bins.stats.txt",
 	       "--seedProtFasta", $seedprot,
-	       @danglen,
+	       @extra_params,
 	       $self->work_dir);
 
     print STDERR "Binning: @cmd\n";
