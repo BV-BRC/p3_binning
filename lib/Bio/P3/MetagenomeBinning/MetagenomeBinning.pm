@@ -648,6 +648,7 @@ sub compute_bins
     if (exists $self->params->{min_contig_len})
     {
 	push(@extra_params, "--lenFilter", $self->params->{min_contig_len});
+	push(@extra_params, "--binLenFilter", $self->params->{min_contig_len});
     }
     if (exists $self->params->{min_contig_cov})
     {
