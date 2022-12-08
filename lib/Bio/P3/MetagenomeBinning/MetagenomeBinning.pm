@@ -653,6 +653,7 @@ sub compute_bins
     if (exists $self->params->{min_contig_cov})
     {
 	push(@extra_params, "--covgFilter", $self->params->{min_contig_cov});
+	push(@extra_params, "--binCovgFilter", $self->params->{min_contig_cov});
     }
 
     my @cmd = ("bins_generate",
