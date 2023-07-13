@@ -269,11 +269,13 @@ sub process
     {
 	my $bins = $self->bin_viruses();
 
+	my $annotated_bins = [];
+	my $unannotated_bins = $bins;
 	if ($params->{perform_viral_annotation})
 	{
- 	    my($annotated_bins, $unannotated_bins) = $self->annotate_viruses($bins);
-	    $self->write_viral_summary_report($annotated_bins, $unannotated_bins, $all_bins);
+ 	    ($annotated_bins, $unannotated_bins) = $self->annotate_viruses($bins);
 	}
+	$self->write_viral_summary_report($annotated_bins, $unannotated_bins, $all_bins);
     }
     
     $self->write_summary_report(\@good_results, $all_bins, $self->app->workspace, $self->token);
@@ -404,6 +406,7 @@ sub stage_srr_ids
 	    die "Error staging SRA sample $id\n";
 	}
 	my @files = glob("$dir/*fastq");
+	print STDERR "SRR $id has files: " . Dumper(\@files);
 	if (@files == 1)
 	{
 	    push(@unpaired, $files[0]);
@@ -637,11 +640,30 @@ sub compute_bins
 	}
     }
 
+    my @extra_params;
+    if (exists $self->params->{danglen})
+    {
+	push(@extra_params, "--danglen", $self->params->{danglen});
+    }
+    if (exists $self->params->{min_contig_len})
+    {
+	push(@extra_params, "--lenFilter", $self->params->{min_contig_len});
+	push(@extra_params, "--binLenFilter", $self->params->{min_contig_len});
+    }
+    if (exists $self->params->{min_contig_cov})
+    {
+	push(@extra_params, "--covgFilter", $self->params->{min_contig_cov});
+	push(@extra_params, "--binCovgFilter", $self->params->{min_contig_cov});
+    }
+
     my @cmd = ("bins_generate",
 	       "--dataAPIUrl", binning_data_api_url,
 	       "--statistics-file", "bins.stats.txt",
 	       "--seedProtFasta", $seedprot,
+	       @extra_params,
 	       $self->work_dir);
+
+    print STDERR "Binning: @cmd\n";
     my $rc = system(@cmd);
 
     $rc == 0 or die "Error $rc computing bins: @cmd";
