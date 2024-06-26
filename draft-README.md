@@ -18,6 +18,7 @@ This module provides the following application specfication(s):
 
 ## See also
 
+* [Metagenomic Binning Service Quick Reference](https://www.bv-brc.org/docs/quick_references/services/metagenomic_binning_service.html)
 * [Metagenomic Binning Service](https://www.bv-brc.org/docs/https://bv-brc.org/app/MetagenomicBinning.html)
 * [Metagenomic Binning Service Tutorial](https://www.bv-brc.org/docs//tutorial/metagenomic_binning/metagenomic_binning.html)
 
