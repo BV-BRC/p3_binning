@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<includepath>
+  <includepathentry path="C:\Users\drake\dev_container\modules\app_service\lib" />
+  <includepathentry path="C:\Users\drake\dev_container\modules\p3_auth\lib" />
+  <includepathentry path="C:\Users\drake\dev_container\modules\Workspace\lib" />
+  <includepathentry path="C:\Users\drake\Documents\SEEDtk\git\p3_core\lib" />
+</includepath>
+
