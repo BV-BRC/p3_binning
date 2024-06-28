@@ -19,32 +19,32 @@ __PACKAGE__->mk_accessors(qw(json user key host));
 
 our %job_states =
         (
-	      BOOT_FAIL => 'F',
-	      CANCELLED => 'F',
-	      COMPLETED => 'C',
-	      DEADLINE => 'F',
-	      FAILED => 'F',
-	      NODE_FAIL => 'F',
-	      OUT_OF_MEMORY => 'F',
-	      PENDING => 0,
-	      PREEMPTED => 0,
-	      RUNNING => 0,
-	      REQUEUED => 0,
-	      RESIZING => 0,
-	      REVOKED => 'F',
-	      SUSPENDED => 0,
-	      TIMEOUT => 'F',
-	     );
+        BOOT_FAIL => 'F',
+        CANCELLED => 'F',
+        COMPLETED => 'C',
+        DEADLINE => 'F',
+        FAILED => 'F',
+        NODE_FAIL => 'F',
+        OUT_OF_MEMORY => 'F',
+        PENDING => 0,
+        PREEMPTED => 0,
+        RUNNING => 0,
+        REQUEUED => 0,
+        RESIZING => 0,
+        REVOKED => 'F',
+        SUSPENDED => 0,
+        TIMEOUT => 'F',
+       );
 
 sub new
 {
     my($class, %opts) = @_;
 
     my $self = {
-	json => JSON::XS->new->pretty(1),
-	host => 'bebop.lcrc.anl.gov',
+  json => JSON::XS->new->pretty(1),
+  host => 'bebop.lcrc.anl.gov',
 #	host => 'beboplogin1.lcrc.anl.gov',
-	%opts,
+  %opts,
     };
     return bless $self, $class;
 }
@@ -60,31 +60,31 @@ sub assemble_paired_end_libs
     my $uncomp_size;
     for my $f ($libs->{read1}, $libs->{read2})
     {
-	my $s = $ws->stat($f);
-	
-	if (!$s)
-	{
-	    push(@errs, "File $f does not exist");
-	}
-	elsif ($s->size == 0)
-	{
-	    push(@errs, "File $f has zero size");
-	}
-	else
-	{
-	    if ($ws->file_is_gzipped($f))
-	    {
-		$comp_size += $s->size;
-	    } else {
-		$uncomp_size += $s->size;
-	    }
-	}
+  my $s = $ws->stat($f);
+
+  if (!$s)
+  {
+      push(@errs, "File $f does not exist");
+  }
+  elsif ($s->size == 0)
+  {
+      push(@errs, "File $f has zero size");
+  }
+  else
+  {
+      if ($ws->file_is_gzipped($f))
+      {
+    $comp_size += $s->size;
+      } else {
+    $uncomp_size += $s->size;
+      }
+  }
     }
     if (@errs)
     {
-	die "Error checking input data: @errs\n";
+  die "Error checking input data: @errs\n";
     }
-	
+
     my $est_comp = $comp_size + 0.75 * $uncomp_size;
     $est_comp /= 1e6;
     #
@@ -105,15 +105,15 @@ sub assemble_paired_end_libs
     my $est_storage = int(3.3e6 * $est_comp / 0.75);
 
     print "est_storage=$est_storage\n";
-    
+
     my $partition = "bdwall";
 
     if ($est_storage > 3e9)
     {
-	$partition = "bdwd";
+  $partition = "bdwd";
     }
     my $input = $self->json->encode($libs);
-    
+
     my $top = '/home/olson/P3/bebop/dev_container';
     my $rt = '/home/olson/P3/bebop/runtime';
     my $submit_home = '/lcrc/project/PATRIC/submit-home';
@@ -155,58 +155,58 @@ ENDBATCH
     my($out, $fh);
     while (1)
     {
-	
-	if (1)
-	{
-	    my $dbatch = $batch;
-	    $dbatch =~ s/sig=[a-z0-9]+/sig=XXX/g;
-	    print STDERR "Submitting:\n$dbatch\n";
-	}
-	
-	my $err;
-	my($fh, $handle) = $self->run(["sbatch", "--parsable"], $batch, \$out, \$err);
-	
-	if (!$handle)
-	{
-	    die "Error issuing submission\n";
-	}
-	
-	if (!$handle->finish)
-	{
-	    #
-	    # See if we failed with permission denied; that means likely the machine
-	    # is in maint mode. Retry after a bit.
-	    #
-	    if ($err =~ /Permission denied/)
-	    {
-		warn "Error accessing service: $err\nSleeping and retrying\n";
-		close($fh) if $fh;
-		sleep 60;
-	    }
-	    else
-	    {
-		die "Sbatch submit failed: $?";
-	    }
-	}
-	else
-	{
-	    last;
-	}
+
+  if (1)
+  {
+      my $dbatch = $batch;
+      $dbatch =~ s/sig=[a-z0-9]+/sig=XXX/g;
+      print STDERR "Submitting:\n$dbatch\n";
+  }
+
+  my $err;
+  my($fh, $handle) = $self->run(["sbatch", "--parsable"], $batch, \$out, \$err);
+
+  if (!$handle)
+  {
+      die "Error issuing submission\n";
+  }
+
+  if (!$handle->finish)
+  {
+      #
+      # See if we failed with permission denied; that means likely the machine
+      # is in maint mode. Retry after a bit.
+      #
+      if ($err =~ /Permission denied/)
+      {
+    warn "Error accessing service: $err\nSleeping and retrying\n";
+    close($fh) if $fh;
+    sleep 60;
+      }
+      else
+      {
+    die "Sbatch submit failed: $?";
+      }
+  }
+  else
+  {
+      last;
+  }
     }
 
     my $job;
     print "Output is $out\n";
     if ($out =~ /(\d+)/)
     {
-	$job = $1;
-	print "Have job $job\n";
+  $job = $1;
+  print "Have job $job\n";
     }
 
 
     if (!$job)
     {
-	print $batch;
-	die "Job did not start\n";
+  print $batch;
+  die "Job did not start\n";
     }
     print "Submitted job $job\n";
 
@@ -214,50 +214,50 @@ ENDBATCH
     my $final_res;
     while (1)
     {
-	my $res = $self->run_sacct([$job]);
-	if ($res)
-	{
-	    my($sword) = $res->{$job}->{State} =~ /^(\S+)/;
-	    my $state = $job_states{$sword};
-	    print STDERR Dumper($state, $res);
-	    if ($state)
-	    {
-		$final_state = $state;
-		$final_res = $res->{$job};
-		last;
-	    }
-	    #
-	    # Work around bebop bug that leaves jobs as PENDING (or RUNNING).
-	    # Check workspace for an output file that follows after contigs
-	    #
-	    my $stat = $ws->stat("$ws_path/params.txt");
-	    if ($stat && $stat->size > 0)
-	    {
-		$stat = $ws->stat("$ws_path/contigs.fasta");
-		if ($stat && $stat->size > 0)
-		{
-		    print STDERR "Marking job success due to completed output file $ws_path/params.txt and contigs exist with size " . $stat->size . "\n";
-		    $final_state = 'C';
-		}
-		else
-		{
-		    print STDERR "Marking job unsuccessful due to completed output file $ws_path/params.txt and nonexistent contigs\n";
-		    $final_state = 'F';
-		}
-		last;
-	    }
-	}
-	
-	sleep 120;
+  my $res = $self->run_sacct([$job]);
+  if ($res)
+  {
+      my($sword) = $res->{$job}->{State} =~ /^(\S+)/;
+      my $state = $job_states{$sword};
+      print STDERR Dumper($state, $res);
+      if ($state)
+      {
+    $final_state = $state;
+    $final_res = $res->{$job};
+    last;
+      }
+      #
+      # Work around bebop bug that leaves jobs as PENDING (or RUNNING).
+      # Check workspace for an output file that follows after contigs
+      #
+      my $stat = $ws->stat("$ws_path/params.txt");
+      if ($stat && $stat->size > 0)
+      {
+    $stat = $ws->stat("$ws_path/contigs.fasta");
+    if ($stat && $stat->size > 0)
+    {
+        print STDERR "Marking job success due to completed output file $ws_path/params.txt and contigs exist with size " . $stat->size . "\n";
+        $final_state = 'C';
+    }
+    else
+    {
+        print STDERR "Marking job unsuccessful due to completed output file $ws_path/params.txt and nonexistent contigs\n";
+        $final_state = 'F';
+    }
+    last;
+      }
+  }
+
+  sleep 120;
     }
 
     if ($final_state eq 'C')
     {
-	print "Assembly successful\n";
+  print "Assembly successful\n";
     }
     else
     {
-	die "Assembly failed with state $final_res->{$job}->{State}\n";
+  die "Assembly failed with state $final_res->{$job}->{State}\n";
     }
 }
 
@@ -279,20 +279,20 @@ sub run_sacct
 
     my @params = qw(JobID State Account User MaxRSS ExitCode Elapsed Start End NodeList);
     my %col = map { $params[$_] => $_ } 0..$#params;
-    
+
     my @cmd = ('sacct', '-j', $jobspec,
-	                      '-o', join(",", @params),
-	                      '--units', 'M',
-	                      '--parsable', '--noheader');
-    
+                        '-o', join(",", @params),
+                        '--units', 'M',
+                        '--parsable', '--noheader');
+
 
     my $err;
     my($fh, $handle) = $self->run(\@cmd, undef, undef, \$err);
 
     if (!$handle)
     {
-	warn "Error checking sacct: $? $!\n";
-	return;
+  warn "Error checking sacct: $? $!\n";
+  return;
     }
 
     my %jobinfo;
@@ -302,37 +302,35 @@ sub run_sacct
     # Pull job state and start times from "id" lines, the other data from "id.batch"
     #
 
-    my %jobinfo;
-
     while (<$fh>)
     {
-	chomp;
-	my @a = split(/\|/);
-	my %vals = map { $_ => $a[$col{$_}] } @params;
-	my($id, $isbatch) = $vals{JobID}  =~ /(\d+)(\.batch)?/;
-	# print "$id: " . Dumper(\%vals);
-	
-	if ($isbatch)
-	{
-	    $jobinfo{$id} = { %vals };
-	}
-	else
-	{
-	    $jobinfo{$id}->{Start} = $vals{Start} unless $vals{Start} eq 'Unknown';
-	    $jobinfo{$id}->{State} = $vals{State};
-	    $jobinfo{$id}->{NodeList} = $vals{NodeList};
-	}
+  chomp;
+  my @a = split(/\|/);
+  my %vals = map { $_ => $a[$col{$_}] } @params;
+  my($id, $isbatch) = $vals{JobID}  =~ /(\d+)(\.batch)?/;
+  # print "$id: " . Dumper(\%vals);
+
+  if ($isbatch)
+  {
+      $jobinfo{$id} = { %vals };
+  }
+  else
+  {
+      $jobinfo{$id}->{Start} = $vals{Start} unless $vals{Start} eq 'Unknown';
+      $jobinfo{$id}->{State} = $vals{State};
+      $jobinfo{$id}->{NodeList} = $vals{NodeList};
+  }
     }
     if (!$handle->finish())
     {
-	if ($err =~ /Permission denied/)
-	{
-	    warn "Perm denied error from status check\n";
-	}
-	else
-	{
-	    warn "Error from status check: $err\n";
-	}
+  if ($err =~ /Permission denied/)
+  {
+      warn "Perm denied error from status check\n";
+  }
+  else
+  {
+      warn "Error from status check: $err\n";
+  }
     }
 
     return \%jobinfo;
@@ -343,36 +341,36 @@ sub run
     my($self, $cmd, $input, $output, $error) = @_;
 
     my $shcmd = join(" ", map { "'$_'" }  @$cmd);
-    
+
     my $new = ["ssh",
-	       "-o", "StrictHostKeyChecking=no",
-	       ($self->user ? ("-l", $self->user) : ()),
-	       ($self->key ? ("-i", $self->key) : ()),
-	       $self->host,
-	       "bash -l -c \"$shcmd\"",
-	       ];
+         "-o", "StrictHostKeyChecking=no",
+         ($self->user ? ("-l", $self->user) : ()),
+         ($self->key ? ("-i", $self->key) : ()),
+         $self->host,
+         "bash -l -c \"$shcmd\"",
+         ];
 
     my $fh;
 
     my @inp;
     if ($input)
     {
-	@inp = ("<", \$input);
+  @inp = ("<", \$input);
     }
     my @out;
     if ($output)
     {
-	@out = (">", $output);
+  @out = (">", $output);
     }
     else
     {
-	$fh = IO::Handle->new;
-	@out = (">pipe", $fh);
+  $fh = IO::Handle->new;
+  @out = (">pipe", $fh);
     }
     my @err;
     if ($error)
     {
-	@err = ('2>', $error);
+  @err = ('2>', $error);
     }
 
     my $stderr;
@@ -380,8 +378,8 @@ sub run
     my $h = IPC::Run::start($new, @inp, @out, @err);
     if (!$h)
     {
-	warn "Error $? running : @$cmd\n";
-	return;
+  warn "Error $? running : @$cmd\n";
+  return;
     }
     return ($fh, $h);
 }
