@@ -43,7 +43,16 @@ use Data::Dumper;
 # programs so it is isolated into its own directory.
 #
 
-my $spades = "$ENV{KB_RUNTIME}/spades-3.12.0/bin/spades.py";
+#
+# Find the latest version of spades.
+#
+
+my @spades = sort { $b cmp $a } <$ENV{KB_RUNTIME}/spades-*/bin/spades.py>;
+die "Cannot find spades in runtime $ENV{KB_RUNTIME}\n" if @spades == 0;
+
+my $spades = $spades[0];
+
+print STDERR "$0 using spades at $spades\n";
 
 my $binner = Bio::P3::MetagenomeBinning::MetagenomeBinning->new();
 $binner->spades($spades);
