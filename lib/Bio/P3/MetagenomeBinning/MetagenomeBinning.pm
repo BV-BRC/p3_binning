@@ -353,7 +353,7 @@ sub compute_paired_end_lib_size
 	for my $r (@reads)
 	{
 	    my $stat = eval { $self->app->workspace->stat($r); };
-	    $total += $stat if ref($stat);
+	    $total += $stat->[7] if ref($stat);
 	}
     }
     return $total;
