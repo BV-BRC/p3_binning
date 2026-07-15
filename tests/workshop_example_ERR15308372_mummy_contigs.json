@@ -1,0 +1,17 @@
+{
+  "danglen": "50",
+  "perform_viral_annotation": "1",
+  "force_local_assembly": "0",
+  "contigs": "/olson@patricbrc.org/PATRIC-QA/applications/App-MetagenomeBinning/ERR15308372_mummy_contigs.fasta",
+  "genome_group": "",
+  "assembler": "",
+  "perform_viral_binning": "0",
+  "output_path": "/olson@patricbrc.org/PATRIC-QA/applications/App-MetagenomeBinning",
+  "perform_bacterial_binning": "1",
+  "perform_bacterial_annotation": "1",
+  "min_contig_cov": 5,
+  "skip_indexing": "0",
+  "force_inline_annotation": "1",
+  "min_contig_len": 300,
+  "output_file": "workshop_err15308372_mummy_contigs"
+}
